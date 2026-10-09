@@ -1,6 +1,9 @@
 use std::collections::HashSet;
 
-use crate::{domain::self_revision::SELF_REVISION_DURABLE_WRITE_PATH, error::AppError};
+use crate::{
+    domain::{event::EventReference, self_revision::SELF_REVISION_DURABLE_WRITE_PATH},
+    error::AppError,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EpisodeProjectionInput {
@@ -42,10 +45,10 @@ pub fn build_episode_summary_projection(
             "episode projection requires an episode reference".to_string(),
         ));
     }
-    let episode_event_ids = dedupe(input.episode_event_ids);
+    let episode_event_ids = normalize_event_ids(input.episode_event_ids)?;
+    let linked_evidence_ids = normalize_event_ids(input.linked_evidence_ids)?;
     let event_set = episode_event_ids.iter().cloned().collect::<HashSet<_>>();
-    if let Some(outside_id) = input
-        .linked_evidence_ids
+    if let Some(outside_id) = linked_evidence_ids
         .iter()
         .find(|event_id| !event_set.contains(*event_id))
     {
@@ -65,7 +68,7 @@ pub fn build_episode_summary_projection(
         objective: input.objective,
         outcome: input.outcome,
         lesson: input.lesson,
-        linked_evidence_ids: dedupe(input.linked_evidence_ids),
+        linked_evidence_ids,
         event_count: episode_event_ids.len(),
         lifecycle_status,
         writes_performed: false,
@@ -74,12 +77,18 @@ pub fn build_episode_summary_projection(
     })
 }
 
-fn dedupe(values: Vec<String>) -> Vec<String> {
-    let mut deduped = Vec::new();
+/// Episode projection `*_event_ids` retain raw compatibility readback after
+/// accepting raw ids or `event:<id>` references at the input boundary.
+fn normalize_event_ids(values: Vec<String>) -> Result<Vec<String>, AppError> {
+    let mut normalized = Vec::new();
     for value in values {
-        if !deduped.contains(&value) {
-            deduped.push(value);
+        let event_id = EventReference::parse(value)
+            .map_err(AppError::from)?
+            .event_id()
+            .to_string();
+        if !normalized.contains(&event_id) {
+            normalized.push(event_id);
         }
     }
-    deduped
+    Ok(normalized)
 }

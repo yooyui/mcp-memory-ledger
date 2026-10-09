@@ -5,7 +5,10 @@ use std::{
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
 };
 
-use agent_llm_mm::{run_doctor, support::config::AppConfig};
+use agent_llm_mm::{
+    adapters::sqlite::initialize_database, domain::event::EventReference, run_doctor,
+    support::config::AppConfig,
+};
 use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -46,6 +49,7 @@ async fn main() -> Result<()> {
     )?;
 
     let config = AppConfig::load_from_path(&config_path).map_err(anyhow::Error::msg)?;
+    initialize_database(&config.database_url).await?;
     let doctor = run_doctor(config).await?;
     write_json(&args.output_dir.join("doctor.json"), &doctor)?;
 
@@ -91,6 +95,19 @@ async fn main() -> Result<()> {
         }),
     )?)?;
 
+    let decision_before = extract_structured(client.call_tool(
+        "decide_with_snapshot",
+        json!({
+            "task": "review update",
+            "action": "review_conflicting_commitment_update",
+            "snapshot": snapshot_before
+        }),
+    )?)?;
+    write_json(
+        &args.output_dir.join("decision-before.json"),
+        &decision_before,
+    )?;
+
     let _ = client.call_tool(
         "ingest_interaction",
         json!({
@@ -127,19 +144,6 @@ async fn main() -> Result<()> {
         &snapshot_after,
     )?;
 
-    let decision_before = extract_structured(client.call_tool(
-        "decide_with_snapshot",
-        json!({
-            "task": "review update",
-            "action": "review_conflicting_commitment_update",
-            "snapshot": snapshot_before
-        }),
-    )?)?;
-    write_json(
-        &args.output_dir.join("decision-before.json"),
-        &decision_before,
-    )?;
-
     let decision_after = extract_structured(client.call_tool(
         "decide_with_snapshot",
         json!({
@@ -159,9 +163,16 @@ async fn main() -> Result<()> {
         &sqlite_summary,
     )?;
 
+    let baseline_event_reference = EventReference::parse(
+        baseline["result"]["structuredContent"]["event_id"]
+            .as_str()
+            .context("baseline ingest response is missing event_id")?,
+    )
+    .map_err(|error| anyhow::anyhow!("baseline ingest returned an invalid event_id: {error:?}"))?
+    .canonical();
     let timeline = json!({
         "baseline": {
-            "event_id": baseline["result"]["structuredContent"]["event_id"]
+            "event_reference": baseline_event_reference
         },
         "gate_before": gate_before,
         "negative_conflict": {
@@ -422,6 +433,7 @@ impl StdioClient {
                 agent_llm_mm::support::config::CONFIG_PATH_ENV_VAR,
                 config_path.to_string_lossy().into_owned(),
             )
+            .env_remove(agent_llm_mm::support::config::DATABASE_URL_ENV_VAR)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -435,6 +447,12 @@ impl StdioClient {
             .stdout
             .take()
             .ok_or_else(|| io::Error::other("missing child stdout"))?;
+        if let Some(stderr) = child.stderr.take() {
+            std::thread::spawn(move || {
+                let mut stderr = stderr;
+                let _ = io::copy(&mut stderr, &mut io::sink());
+            });
+        }
 
         Ok(Self {
             child,

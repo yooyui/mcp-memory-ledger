@@ -3,8 +3,9 @@ use chrono::{DateTime, Utc};
 
 use crate::{
     domain::{
-        event::Event,
-        types::{EventKind, Namespace, Owner},
+        event::{Event, EventReference, MAX_EVIDENCE_MANIFEST_ITEMS},
+        snapshot::SnapshotTimeWindow,
+        types::{EventKind, MemoryScope, Namespace, Owner},
     },
     error::AppError,
 };
@@ -38,7 +39,7 @@ impl StoredEvent {
     }
 
     pub fn event_reference(&self) -> String {
-        format!("event:{}", self.event_id)
+        EventReference::from_event_id(self.event_id.clone()).canonical()
     }
 }
 
@@ -46,6 +47,116 @@ impl StoredEvent {
 pub trait EventStore {
     async fn append_event(&self, event: StoredEvent) -> Result<(), AppError>;
     async fn list_event_references(&self) -> Result<Vec<String>, AppError>;
+    async fn list_event_references_in_scope(
+        &self,
+        scope: &MemoryScope,
+        evidence_manifest: Option<&[EventReference]>,
+    ) -> Result<Vec<String>, AppError> {
+        if evidence_manifest.is_some_and(|manifest| manifest.len() > MAX_EVIDENCE_MANIFEST_ITEMS) {
+            return Err(AppError::InvalidParams(format!(
+                "evidence_manifest must contain at most {MAX_EVIDENCE_MANIFEST_ITEMS} entries"
+            )));
+        }
+        if evidence_manifest.is_some() && !scope.is_explicitly_scoped() {
+            return Err(AppError::InvalidParams(
+                "evidence_manifest requires an explicit namespace".to_string(),
+            ));
+        }
+        if evidence_manifest.is_some_and(|manifest| manifest.is_empty()) {
+            return Ok(Vec::new());
+        }
+        if scope.is_legacy_unscoped() && evidence_manifest.is_none() {
+            return self.list_event_references().await;
+        }
+        let mut event_ids = self
+            .query_evidence_event_ids_unbounded(EvidenceQuery {
+                namespace: scope.namespace().cloned(),
+                owner: scope.owner(),
+                kind: None,
+                limit: None,
+                recorded_after: None,
+                recorded_before: None,
+                event_id_prefix: None,
+            })
+            .await?;
+        if let Some(manifest) = evidence_manifest {
+            event_ids.retain(|event_id| {
+                manifest
+                    .iter()
+                    .any(|reference| reference.event_id() == event_id)
+            });
+        }
+        Ok(event_ids
+            .into_iter()
+            .map(|event_id| EventReference::from_event_id(event_id).canonical())
+            .collect())
+    }
+    async fn list_event_references_for_snapshot(
+        &self,
+        scope: &MemoryScope,
+        evidence_manifest: Option<&[EventReference]>,
+        time_window: &SnapshotTimeWindow,
+    ) -> Result<Vec<String>, AppError> {
+        time_window.validate().map_err(|_| {
+            AppError::InvalidParams(
+                "recorded_after must be less than or equal to recorded_before".to_string(),
+            )
+        })?;
+        if evidence_manifest.is_some_and(|manifest| manifest.len() > MAX_EVIDENCE_MANIFEST_ITEMS) {
+            return Err(AppError::InvalidParams(format!(
+                "evidence_manifest must contain at most {MAX_EVIDENCE_MANIFEST_ITEMS} entries"
+            )));
+        }
+        if evidence_manifest.is_some() && !scope.is_explicitly_scoped() {
+            return Err(AppError::InvalidParams(
+                "evidence_manifest requires an explicit namespace".to_string(),
+            ));
+        }
+        if !time_window.is_unbounded() && !scope.is_explicitly_scoped() {
+            return Err(AppError::InvalidParams(
+                "snapshot time window requires an explicit namespace".to_string(),
+            ));
+        }
+        if time_window.is_unbounded() {
+            return self
+                .list_event_references_in_scope(scope, evidence_manifest)
+                .await;
+        }
+        if evidence_manifest.is_some_and(|manifest| manifest.is_empty()) {
+            return Ok(Vec::new());
+        }
+        let mut event_ids = self
+            .query_evidence_event_ids_unbounded(EvidenceQuery {
+                namespace: scope.namespace().cloned(),
+                owner: scope.owner(),
+                kind: None,
+                limit: None,
+                recorded_after: time_window.recorded_after,
+                recorded_before: time_window.recorded_before,
+                event_id_prefix: None,
+            })
+            .await?;
+        if let Some(manifest) = evidence_manifest {
+            event_ids.retain(|event_id| {
+                manifest
+                    .iter()
+                    .any(|reference| reference.event_id() == event_id)
+            });
+        }
+        Ok(event_ids
+            .into_iter()
+            .map(|event_id| EventReference::from_event_id(event_id).canonical())
+            .collect())
+    }
+    /// Returns the exact recorded timestamps for an already-authorized snapshot
+    /// manifest. Callers use these bounds to keep dependent episode reads in the
+    /// same trigger window; a missing manifest entry is never substituted with a
+    /// wider scope query.
+    async fn list_recorded_at_for_snapshot_manifest(
+        &self,
+        scope: &MemoryScope,
+        evidence_manifest: &[EventReference],
+    ) -> Result<Vec<DateTime<Utc>>, AppError>;
     async fn query_evidence_event_ids(&self, query: EvidenceQuery)
     -> Result<Vec<String>, AppError>;
     async fn query_evidence_event_ids_unbounded(

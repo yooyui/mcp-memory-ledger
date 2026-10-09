@@ -2,6 +2,7 @@ use crate::{
     domain::{
         claim::ClaimDraft,
         commitment::Commitment,
+        event::EventReference,
         identity_core::IdentityCore,
         reflection::{Reflection, ReflectionIdentityUpdate},
         rules::reflection_policy::{ReflectionDecision, ReflectionTrigger, classify_reflection},
@@ -115,6 +116,7 @@ where
         commitment_updates,
         handled_trigger_ledger_entry,
     } = input;
+    let replacement_evidence_event_ids = normalize_event_ids(replacement_evidence_event_ids)?;
 
     let reflection_id = deps.next_id().await?;
     let recorded_at = deps.now().await?;
@@ -323,7 +325,7 @@ where
     let mut evidence_event_ids = explicit;
 
     if let Some(query) = query {
-        let mut queried_ids = deps.query_evidence_event_ids(query).await?;
+        let mut queried_ids = normalize_event_ids(deps.query_evidence_event_ids(query).await?)?;
         if queried_ids.is_empty() && evidence_event_ids.is_empty() {
             return Err(AppError::InvalidParams(
                 "no replacement evidence found for the provided query".to_string(),
@@ -332,12 +334,22 @@ where
         evidence_event_ids.append(&mut queried_ids);
     }
 
-    let mut deduped = Vec::new();
-    for event_id in evidence_event_ids {
-        if !deduped.contains(&event_id) {
-            deduped.push(event_id);
+    normalize_event_ids(evidence_event_ids)
+}
+
+/// Reflection APIs accept either a raw event id or its `event:<id>` reference.
+/// Persistence and store lookups intentionally retain raw ids for the existing
+/// `*_event_ids` compatibility contract.
+fn normalize_event_ids(event_ids: Vec<String>) -> Result<Vec<String>, AppError> {
+    let mut normalized = Vec::new();
+    for event_id in event_ids {
+        let event_id = EventReference::parse(event_id)
+            .map_err(AppError::from)?
+            .event_id()
+            .to_string();
+        if !normalized.contains(&event_id) {
+            normalized.push(event_id);
         }
     }
-
-    Ok(deduped)
+    Ok(normalized)
 }

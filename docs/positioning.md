@@ -10,6 +10,12 @@ Keep `agent_llm_mm` only as the current implementation package name for the Rust
 
 MCP Memory Ledger is a local-first MCP memory layer for AI agents with SQLite persistence, explicit evidence events, and governed self-revision.
 
+## Core Thesis
+
+The project is not trying to make an agent remember everything. It is trying to make durable memory inspectable and correctable, and to govern which evidence-backed parts of the past may constrain future behavior.
+
+The project origin and feature-admission rules are defined in [origin-and-principles.md](origin-and-principles.md).
+
 ## Longer Description
 
 MCP Memory Ledger gives local AI clients a persistent MCP `stdio` memory server. It records interactions, builds self snapshots, and supports evidence-gated self-revision through bounded triggers and auditable diagnostics. The current repository remains a technical demo / MVP and should not be described as a production-grade autonomous agent platform.
@@ -27,7 +33,7 @@ MCP Memory Ledger gives local AI clients a persistent MCP `stdio` memory server.
 - Evidence-gated self-revision MVP
 - Rust MCP `stdio` server with SQLite persistence
 - OpenAI-compatible / OpenRouter provider integration
-- Technical demo / verified MVP entering productization planning
+- Technical demo / MVP with an evidence-backed local memory core
 
 ## What Not To Say
 
@@ -36,6 +42,7 @@ MCP Memory Ledger gives local AI clients a persistent MCP `stdio` memory server.
 - Full remote/team/multi-tenant product
 - Provider quality certification or model gateway
 - Drop-in replacement for broad memory platforms or stateful agent platforms
+- Release-evidence platform, remote administration suite, or general agent orchestration framework
 
 ## Naming Policy
 

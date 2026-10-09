@@ -49,4 +49,4 @@ if [[ -n "${output_dir}" ]]; then
   args+=(--output-md "${output_dir}/release-evidence-index.md")
 fi
 
-cargo run --quiet --bin release_evidence_index -- "${args[@]}"
+cargo run --quiet --features release-tools --bin release_evidence_index -- "${args[@]}"

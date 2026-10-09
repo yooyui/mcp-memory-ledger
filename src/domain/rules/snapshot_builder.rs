@@ -17,7 +17,7 @@ pub fn build_snapshot(input: SnapshotRequest) -> Result<SelfSnapshot, DomainErro
         }
     }
 
-    if evidence.is_empty() {
+    if evidence.is_empty() && !input.allow_empty_evidence {
         return Err(DomainError::InsufficientEvidence);
     }
 

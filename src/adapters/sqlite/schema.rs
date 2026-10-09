@@ -1,4 +1,11 @@
 pub(super) const OWNER_NAMESPACE_SCOPE_CONSTRAINT_NAME: &str = "owner_namespace_scope";
+pub(super) const CURRENT_SCHEMA_VERSION: i64 = 3;
+
+pub(super) const SCHEMA_MIGRATIONS: [(i64, &str); 3] = [
+    (1, "baseline_schema"),
+    (2, "owner_namespace_scope"),
+    (3, "reflection_audit_columns"),
+];
 
 const OWNER_NAMESPACE_SCOPE_CONSTRAINT_SQL: &str = r#"    CONSTRAINT owner_namespace_scope CHECK (
         (owner = 'self' AND namespace = 'self')
@@ -79,6 +86,13 @@ CREATE TABLE IF NOT EXISTS operation_log (
     redaction_version INTEGER NOT NULL DEFAULT 1
 )"#;
 
+const SCHEMA_MIGRATIONS_TABLE_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    applied_at TEXT NOT NULL
+)"#;
+
 const LEGACY_NAMESPACE_BACKFILL_WITH_NAMESPACE_SQL: &str = "COALESCE(NULLIF(namespace, ''), CASE owner WHEN 'self' THEN 'self' WHEN 'user' THEN 'user/default' ELSE 'world' END)";
 const LEGACY_NAMESPACE_BACKFILL_WITHOUT_NAMESPACE_SQL: &str =
     "CASE owner WHEN 'self' THEN 'self' WHEN 'user' THEN 'user/default' ELSE 'world' END";
@@ -103,6 +117,8 @@ pub(super) fn init_sql() -> String {
 {commitments_table};
 
 {operation_log_table};
+
+{schema_migrations_table};
 "#,
         events_table = events_table_sql(true),
         claims_table = claims_table_sql(true),
@@ -113,6 +129,7 @@ pub(super) fn init_sql() -> String {
         identity_claims_table = IDENTITY_CLAIMS_TABLE_SQL,
         commitments_table = COMMITMENTS_TABLE_SQL,
         operation_log_table = OPERATION_LOG_TABLE_SQL,
+        schema_migrations_table = SCHEMA_MIGRATIONS_TABLE_SQL,
     )
 }
 

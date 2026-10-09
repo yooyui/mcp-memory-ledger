@@ -63,4 +63,4 @@ if [[ -n "${rollback_note}" ]]; then
   args+=(--rollback-note "${rollback_note}")
 fi
 
-cargo run --quiet --bin release_decision_local -- "${args[@]}"
+cargo run --quiet --features release-tools --bin release_decision_local -- "${args[@]}"

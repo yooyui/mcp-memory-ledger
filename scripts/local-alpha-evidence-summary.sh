@@ -23,4 +23,4 @@ project_root="$(cd "${script_dir}/.." && pwd -P)"
 
 cd "${project_root}"
 
-cargo run --quiet --bin local_alpha_evidence_summary -- "$@"
+cargo run --quiet --features release-tools --bin local_alpha_evidence_summary -- "$@"

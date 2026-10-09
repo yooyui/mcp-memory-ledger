@@ -91,7 +91,7 @@ pub async fn start_dashboard_service_with_operation_log(
     operation_log: Option<SqliteStore>,
 ) -> Result<DashboardHandle> {
     config.validate().map_err(anyhow::Error::msg)?;
-    let listener = TcpListener::bind(format!("{}:{}", config.host, config.port)).await?;
+    let listener = TcpListener::bind((config.host.as_str(), config.port)).await?;
     let address = listener.local_addr()?;
     let base_path = normalized_base_path(&config.base_path);
     let state = DashboardState {

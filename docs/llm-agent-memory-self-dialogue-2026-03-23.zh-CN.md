@@ -17,7 +17,7 @@
 - 失败模式、数据模型与运行规则
 
 **补充说明：**  
-本文件为讨论整理稿 / 提炼稿。对应的完整原始探讨日志已单独保存于 `docs/llm-agent-memory-self-dialogue-raw-log-2026-03-23.zh-CN.md`，用于保留逐轮问答顺序、对话人物信息与原始表达。
+本文件为讨论整理稿 / 提炼稿。对应的完整逐轮日志已归档至本地分支 `codex/archive/pre-mainline-reset-2026-07-10`，原路径为 `docs/llm-agent-memory-self-dialogue-raw-log-2026-03-23.zh-CN.md`。查阅方式见[历史归档说明](archive.md)。
 
 ---
 

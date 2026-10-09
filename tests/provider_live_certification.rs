@@ -922,12 +922,12 @@ impl FailingChatServer {
 impl Drop for FailingChatServer {
     fn drop(&mut self) {
         if let Some(handle) = self.handle.take() {
-            if self.request_count() == 0 {
-                if let Ok(mut stream) = TcpStream::connect((self.host.as_str(), self.port)) {
-                    let _ = stream.write_all(
-                        b"GET /__test_shutdown HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\n\r\n",
-                    );
-                }
+            if self.request_count() == 0
+                && let Ok(mut stream) = TcpStream::connect((self.host.as_str(), self.port))
+            {
+                let _ = stream.write_all(
+                    b"GET /__test_shutdown HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\n\r\n",
+                );
             }
             let _ = handle.join();
         }

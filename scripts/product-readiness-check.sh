@@ -48,4 +48,4 @@ if [[ -n "${output_dir}" ]]; then
   args+=(--output-md "${output_dir}/product-readiness-summary.md")
 fi
 
-cargo run --quiet --bin product_readiness_check -- "${args[@]}"
+cargo run --quiet --features release-tools --bin product_readiness_check -- "${args[@]}"

@@ -7,12 +7,14 @@ use crate::{
     },
     domain::{
         commitment::Commitment,
+        event::EventReference,
         reflection::Reflection,
         self_revision::{
             AutoReflectDiagnosticInput, AutoReflectDiagnosticSummary, AutoReflectOutcome,
             SelfRevisionProposal, SelfRevisionRequest, SuppressionCategory, TriggerType,
         },
-        types::{Namespace, Owner},
+        snapshot::SnapshotTimeWindow,
+        types::{MemoryScope, Namespace, Owner},
     },
     error::AppError,
     ports::{
@@ -250,9 +252,11 @@ impl AutoReflectResult {
 struct TriggerCandidate {
     trigger_type: TriggerType,
     namespace: Namespace,
+    scope: MemoryScope,
     trigger_hints: Vec<String>,
     trigger_key: String,
     evidence_event_ids: Vec<String>,
+    time_window: SnapshotTimeWindow,
     should_consider: bool,
     episode_watermark: Option<u64>,
 }
@@ -386,11 +390,15 @@ async fn detect_trigger_candidate<D>(
 where
     D: EventStore + EpisodeStore + Sync,
 {
-    let evidence_event_ids = match input.trigger_type {
+    let scope = MemoryScope::for_namespace(input.namespace.clone());
+    // Freeze the trigger window before applying the authorized scope. Querying
+    // the scope first would let older in-scope rows refill a five-row window
+    // after newer out-of-scope rows were excluded.
+    let trigger_window_event_ids = match input.trigger_type {
         TriggerType::Failure => {
             deps.query_evidence_event_ids(EvidenceQuery {
                 namespace: None,
-                owner: Some(Owner::Self_),
+                owner: None,
                 kind: Some(crate::domain::types::EventKind::Action),
                 limit: Some(5),
                 recorded_after: None,
@@ -401,7 +409,7 @@ where
         }
         TriggerType::Conflict | TriggerType::Periodic => {
             deps.query_evidence_event_ids(EvidenceQuery {
-                namespace: trigger_window_namespace_filter(&input.namespace),
+                namespace: None,
                 owner: None,
                 kind: None,
                 limit: Some(5),
@@ -412,38 +420,63 @@ where
             .await?
         }
     };
-    let episode_watermark = dedupe_strings(deps.list_episode_references().await?).len() as u64;
+    let trigger_window_event_ids = normalize_event_ids(trigger_window_event_ids)?;
+    let trigger_manifest = trigger_window_event_ids
+        .iter()
+        .cloned()
+        .map(EventReference::from_event_id)
+        .collect::<Vec<_>>();
+    let evidence_event_ids = normalize_event_ids(
+        deps.list_event_references_for_snapshot(
+            &scope,
+            Some(&trigger_manifest),
+            &SnapshotTimeWindow::unbounded(),
+        )
+        .await?,
+    )?;
+    let evidence_manifest = evidence_event_ids
+        .iter()
+        .cloned()
+        .map(EventReference::from_event_id)
+        .collect::<Vec<_>>();
+    let timestamps = deps
+        .list_recorded_at_for_snapshot_manifest(&scope, &evidence_manifest)
+        .await?;
+    let time_window = match (timestamps.iter().min(), timestamps.iter().max()) {
+        (Some(recorded_after), Some(recorded_before)) => {
+            SnapshotTimeWindow::new(Some(*recorded_after), Some(*recorded_before))
+                .map_err(AppError::from)?
+        }
+        _ => SnapshotTimeWindow::unbounded(),
+    };
+    let episode_watermark = dedupe_strings(
+        deps.list_episode_references_for_snapshot(&scope, &time_window)
+            .await?,
+    )
+    .len() as u64;
     let should_consider = match input.trigger_type {
         TriggerType::Failure => {
             has_any_hint(&input.trigger_hints, &["failure", "rollback"])
                 && evidence_event_ids.len() >= FAILURE_TRIGGER_THRESHOLD
         }
         TriggerType::Conflict => {
-            has_any_hint(&input.trigger_hints, &["conflict", "rollback", "identity"])
+            !evidence_event_ids.is_empty()
+                && has_any_hint(&input.trigger_hints, &["conflict", "rollback", "identity"])
         }
-        TriggerType::Periodic => episode_watermark > 0,
+        TriggerType::Periodic => !evidence_event_ids.is_empty() && episode_watermark > 0,
     };
 
     Ok(TriggerCandidate {
         trigger_type: input.trigger_type,
         namespace: input.namespace.clone(),
+        scope,
         trigger_hints: input.trigger_hints.clone(),
         trigger_key: canonical_trigger_key(&input.namespace, input.trigger_type),
         evidence_event_ids,
+        time_window,
         should_consider,
         episode_watermark: Some(episode_watermark),
     })
-}
-
-fn trigger_window_namespace_filter(namespace: &Namespace) -> Option<Namespace> {
-    // Project and user namespaces are explicit isolation boundaries for
-    // conflict/periodic evidence. The current owner/namespace invariant keeps
-    // `self` and `world` as broader scopes for existing self-revision evidence.
-    if namespace.as_str().starts_with("project/") || namespace.as_str().starts_with("user/") {
-        Some(namespace.clone())
-    } else {
-        None
-    }
 }
 
 async fn evaluate_trigger_suppression<D>(
@@ -507,12 +540,24 @@ where
 {
     Ok(build_self_snapshot::execute(
         deps,
-        BuildSelfSnapshotInput::for_revision_window(
-            candidate
-                .evidence_event_ids
-                .len()
-                .max(DEFAULT_SNAPSHOT_BUDGET),
-        ),
+        BuildSelfSnapshotInput {
+            scope: candidate.scope.clone(),
+            evidence_manifest: Some(
+                candidate
+                    .evidence_event_ids
+                    .iter()
+                    .cloned()
+                    .map(EventReference::from_event_id)
+                    .collect(),
+            ),
+            time_window: candidate.time_window.clone(),
+            budget: crate::domain::snapshot::SnapshotBudget::new(
+                candidate
+                    .evidence_event_ids
+                    .len()
+                    .max(DEFAULT_SNAPSHOT_BUDGET),
+            ),
+        },
     )
     .await?
     .snapshot)
@@ -628,9 +673,15 @@ where
             })
     });
     let latest_entry = deps.latest_trigger_entry(&candidate.trigger_key).await?;
-    let cross_episode_support_count = dedupe_strings(deps.list_episode_references().await?)
-        .len()
-        .min(supporting_claim_count);
+    let supporting_claim_ids = supporting_claims
+        .iter()
+        .map(|claim| claim.claim_id.clone())
+        .collect::<Vec<_>>();
+    let cross_episode_support_count = dedupe_strings(
+        deps.list_episode_references_supporting_claims(&candidate.scope, &supporting_claim_ids)
+            .await?,
+    )
+    .len();
     let now = deps.now().await?;
 
     Ok(IdentityRevisionContext {
@@ -980,6 +1031,23 @@ fn dedupe_strings(values: Vec<String>) -> Vec<String> {
     deduped
 }
 
+/// The model proposal boundary follows the same raw-or-`event:<id>` contract as
+/// explicit reflection input. Downstream store calls and diagnostic `*_event_ids`
+/// stay raw for compatibility.
+fn normalize_event_ids(event_ids: Vec<String>) -> Result<Vec<String>, AppError> {
+    let mut normalized = Vec::new();
+    for event_id in event_ids {
+        let event_id = EventReference::parse(event_id)
+            .map_err(AppError::from)?
+            .event_id()
+            .to_string();
+        if !normalized.contains(&event_id) {
+            normalized.push(event_id);
+        }
+    }
+    Ok(normalized)
+}
+
 async fn resolve_governed_evidence_window<D>(
     deps: &D,
     candidate_evidence_event_ids: &[String],
@@ -988,6 +1056,7 @@ async fn resolve_governed_evidence_window<D>(
 where
     D: EventStore + Sync,
 {
+    let candidate_evidence_event_ids = normalize_event_ids(candidate_evidence_event_ids.to_vec())?;
     let query_constrained_candidate_ids =
         if let Some(proposed_evidence_query) = proposal.proposed_evidence_query.clone() {
             let query_limit = proposed_evidence_query.limit;
@@ -999,7 +1068,7 @@ where
                     "proposed evidence query limit must be at least 1".to_string(),
                 ));
             }
-            let proposed_query_event_ids = dedupe_strings(
+            let proposed_query_event_ids = normalize_event_ids(
                 deps.query_evidence_event_ids_unbounded(EvidenceQuery {
                     namespace: proposed_evidence_query.namespace,
                     owner: proposed_evidence_query.owner,
@@ -1011,6 +1080,7 @@ where
                 })
                 .await?,
             );
+            let proposed_query_event_ids = proposed_query_event_ids?;
             let filtered_candidate_ids = candidate_evidence_event_ids
                 .iter()
                 .filter(|event_id| proposed_query_event_ids.contains(event_id))
@@ -1024,7 +1094,7 @@ where
 
     if proposal.proposed_evidence_event_ids.is_empty() {
         let Some((filtered_candidate_ids, query_limit)) = query_constrained_candidate_ids else {
-            return Ok(candidate_evidence_event_ids.to_vec());
+            return Ok(candidate_evidence_event_ids);
         };
 
         if filtered_candidate_ids.is_empty() {
@@ -1041,7 +1111,8 @@ where
         return Ok(governed_evidence_event_ids);
     }
 
-    let proposed_evidence_event_ids = dedupe_strings(proposal.proposed_evidence_event_ids.clone());
+    let proposed_evidence_event_ids =
+        normalize_event_ids(proposal.proposed_evidence_event_ids.clone())?;
     if proposed_evidence_event_ids
         .iter()
         .any(|event_id| !candidate_evidence_event_ids.contains(event_id))
@@ -1061,7 +1132,5 @@ where
         ));
     }
 
-    let governed_evidence_event_ids = dedupe_strings(proposed_evidence_event_ids.to_vec());
-
-    Ok(governed_evidence_event_ids)
+    Ok(proposed_evidence_event_ids)
 }

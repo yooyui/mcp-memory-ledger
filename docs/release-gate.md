@@ -13,17 +13,26 @@ and deprecation policy live in
 do not replace this gate; they define what must be recorded before a release
 candidate is described publicly.
 
-本 gate 的验证命令显式分为两层：**最小验证集（Minimum Verification Set）** 必须在每次提交前与发布前全部通过；**建议验证集（Recommended Verification Set）** 是发布前应当补跑、并按需保留证据的更深检查。两层都不证明生产自治。
+本 gate 的验证命令显式分为三层：**最小验证集（Minimum Verification Set）** 用于日常提交前，**全功能发布验证（Full-Feature Release Verification）** 在发布前必须通过，**建议验证集（Recommended Verification Set）** 按变更范围补跑并保留证据。三层都不证明生产自治。
 
 ## Minimum Verification Set（最小验证集）
 
-每次提交前与发布前都必须全部通过的最小门槛：
+日常提交前必须通过的默认运行时门槛：
 
 - `cargo fmt --check`
 - `git diff --check`
-- `cargo clippy --all-targets --all-features -- -D warnings`
-- `cargo test`
+- `./scripts/test-tier.sh fast`
+- `cargo clippy --all-targets -- -D warnings`
+- `./scripts/test-tier.sh core`
+- `./scripts/status-sync-check.sh`
 - `./scripts/agent-llm-mm.sh doctor`
+
+## Full-Feature Release Verification（全功能发布验证）
+
+发布前额外必须通过；它重新启用非默认 `release-tools`，不会因为日常减重而跳过发布证据、打包或 provider certification 测试：
+
+- `cargo clippy --all-targets --all-features -- -D warnings`
+- `./scripts/test-tier.sh full`
 
 ## Recommended Verification Set（建议验证集）
 

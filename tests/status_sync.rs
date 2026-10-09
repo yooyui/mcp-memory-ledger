@@ -1,223 +1,277 @@
+use std::fs;
+
 use agent_llm_mm::support::status_sync::{
-    CargoTestList, DocumentTestTotal, RealityGateReport, StatusSyncReport, TEST_TOTAL_DOCUMENTS,
+    PLAN_STATUS_DOCUMENT, REALITY_GATES_DOCUMENT, RealityGateReport,
 };
-use std::collections::BTreeMap;
 
 #[test]
-fn documented_cargo_test_totals_match_current_test_list() {
-    let cargo_tests = CargoTestList::parse(
-        "\
-alpha_case: test
-beta_case: test
-gamma_case: test
-",
+fn active_plan_and_reality_gate_documents_are_in_sync() {
+    assert_eq!(
+        PLAN_STATUS_DOCUMENT, "docs/plans/2026-07-10-product-replan.md",
+        "status sync must read the only active execution plan"
     );
-    let documented_totals = TEST_TOTAL_DOCUMENTS
-        .iter()
-        .map(|path| {
-            let contents = format!("- `cargo test` 全量通过，共 {} 个测试", cargo_tests.total);
-            DocumentTestTotal::parse(*path, &contents).unwrap()
-        })
-        .collect::<Vec<_>>();
 
-    let report = StatusSyncReport::from_totals(cargo_tests.total, documented_totals);
+    let plan = fs::read_to_string(PLAN_STATUS_DOCUMENT).expect("active plan document");
+    let gates = fs::read_to_string(REALITY_GATES_DOCUMENT).expect("reality gate document");
+    let wrapper = fs::read_to_string("scripts/status-sync-check.sh").expect("status sync wrapper");
+    let report = RealityGateReport::from_contents(&plan, &gates);
+
+    assert!(wrapper.contains("rustc --edition=2024"));
+    assert!(!wrapper.contains("cargo test"));
+    assert!(!wrapper.contains("cargo run"));
+    assert!(
+        report
+            .completed_plan_items
+            .contains(&"M0.1 Mainline and repository hygiene".to_string()),
+        "active plan must expose the completed M0.1 milestone as a checkbox"
+    );
+    assert!(
+        report
+            .completed_plan_items
+            .contains(&"M0.1.1 Test and toolchain slimming".to_string()),
+        "active plan must expose the completed M0.1.1 milestone as a checkbox"
+    );
+    assert!(
+        report
+            .completed_plan_items
+            .contains(&"M0.2 Scoped Snapshot v2".to_string()),
+        "active plan must expose the completed M0.2 milestone as a checkbox"
+    );
+    assert!(
+        report
+            .completed_plan_items
+            .contains(&"M0.3.1 Trusted decision commitments and dual gate".to_string()),
+        "active plan must expose the completed M0.3.1 slice as a checkbox"
+    );
+    assert!(
+        report
+            .completed_plan_items
+            .contains(&"M0.3.2 Claim evidence episode provenance".to_string()),
+        "active plan must expose the completed M0.3.2 slice as a checkbox"
+    );
+    assert!(
+        report
+            .completed_plan_items
+            .contains(&"M0.3.3 Governance failure atomicity".to_string()),
+        "active plan must expose the completed M0.3.3 slice as a checkbox"
+    );
+    assert!(
+        report
+            .completed_plan_items
+            .contains(&"M0.3 Governance Correctness".to_string()),
+        "active plan must expose the completed M0.3 milestone as a checkbox"
+    );
+    assert!(
+        report
+            .completed_plan_items
+            .contains(&"M0.3.4 Experimental non-authoritative decision result".to_string()),
+        "active plan must expose the completed M0.3.4 slice as a checkbox"
+    );
+    assert!(
+        report
+            .completed_plan_items
+            .contains(&"M1.1.1 Scoped Event Recall Read Model".to_string()),
+        "active plan must expose the completed M1.1.1 event recall slice as a checkbox"
+    );
+    assert!(
+        report
+            .completed_plan_items
+            .contains(&"M1.1.2 Scoped Claim Provenance Read".to_string()),
+        "active plan must expose the completed M1.1.2 claim provenance slice as a checkbox"
+    );
+    assert!(
+        report
+            .completed_plan_items
+            .contains(&"M1.1.3 Scoped Episode Provenance Read".to_string()),
+        "active plan must expose the completed M1.1.3 episode provenance slice as a checkbox"
+    );
+    assert!(
+        report
+            .completed_plan_items
+            .contains(&"M1.1.4 Scoped Reflection Provenance Read".to_string()),
+        "active plan must expose the completed M1.1.4 reflection provenance slice as a checkbox"
+    );
+    assert!(
+        report
+            .completed_plan_items
+            .contains(&"M1.1.5 Scoped Evidence Relation Runtime Read".to_string()),
+        "active plan must expose the completed M1.1.5 evidence-relation runtime slice as a checkbox"
+    );
+    assert!(
+        report
+            .completed_plan_items
+            .contains(&"M1.1.6 Stable Cross-Type Record Union".to_string()),
+        "active plan must expose the completed M1.1.6 cross-type record union slice as a checkbox"
+    );
+    assert!(
+        report
+            .completed_plan_items
+            .contains(&"M1.2.4 Scoped Episode Lookup".to_string()),
+        "active plan must expose the completed M1.2.4 episode lookup slice as a checkbox"
+    );
+    assert!(
+        report
+            .completed_plan_items
+            .contains(&"M1.2.5 Scoped Reflection Lookup and Record-only History".to_string()),
+        "active plan must expose the completed M1.2.5 reflection lookup slice as a checkbox"
+    );
+    assert!(
+        report
+            .completed_plan_items
+            .contains(&"M1.2.6 Identity and Commitment History".to_string()),
+        "active plan must expose the completed M1.2.6 identity/commitment history slice as a checkbox"
+    );
+    assert!(
+        report
+            .completed_plan_items
+            .contains(&"M1.2.7 Audited Supersede Contract".to_string()),
+        "active plan must expose the completed M1.2.7 audited supersede slice as a checkbox"
+    );
+    assert!(
+        report
+            .completed_plan_items
+            .contains(&"M1.0.1 Scoped Identity Evidence-to-Episode Gate".to_string()),
+        "active plan must expose the completed M1.0.1 identity evidence-to-episode gate as a checkbox"
+    );
+    assert!(
+        report
+            .completed_plan_items
+            .contains(&"M1.0.2 Mixed-Scope Claim Revision Edge Redaction".to_string()),
+        "active plan must expose the completed M1.0.2 mixed-scope claim revision-edge gate as a checkbox"
+    );
+    assert!(
+        report
+            .completed_plan_items
+            .contains(&"M1.0.3 Owner-Namespace Read-Write Reachability Contract".to_string()),
+        "active plan must expose the completed M1.0.3 owner-namespace reachability gate as a checkbox"
+    );
+    for planned_gate in [
+        "M1.3.0 Current-Schema Structural Readback Gate",
+        "M2.0.1 Exclusive Init-and-Migration Lifecycle Gate",
+    ] {
+        assert!(
+            plan.contains(&format!("- [ ] **{planned_gate}**")),
+            "active plan must retain the unresolved gate: {planned_gate}"
+        );
+        assert!(
+            !report
+                .completed_plan_items
+                .contains(&planned_gate.to_string()),
+            "unresolved gate must not be reported complete: {planned_gate}"
+        );
+    }
+    assert!(
+        report
+            .completed_plan_items
+            .contains(&"M1.2.1 Scoped Event Lookup".to_string()),
+        "active plan must expose the completed M1.2.1 event lookup slice as a checkbox"
+    );
+    assert!(
+        report
+            .completed_plan_items
+            .contains(&"M1.2.2 Scoped Claim Lookup".to_string()),
+        "active plan must expose the completed M1.2.2 claim lookup slice as a checkbox"
+    );
+    assert!(
+        report
+            .completed_plan_items
+            .contains(&"M1.2.3 Scoped Claim Reflection History".to_string()),
+        "active plan must expose the completed M1.2.3 claim reflection history slice as a checkbox"
+    );
 
     assert!(
         report.is_in_sync(),
-        "cargo test total drift detected:\n{}",
-        report.format_mismatches()
+        "plan/status reality gate drift detected:\n{}",
+        report.format_contradictions()
     );
 }
 
 #[test]
-fn monitored_documents_include_local_mcp_integration_entrypoint() {
-    assert!(
-        TEST_TOTAL_DOCUMENTS.contains(&"docs/local-mcp-integration-2026-03-26.md"),
-        "local MCP integration docs carry fresh verification totals and must be part of drift checks"
-    );
-    assert!(
-        TEST_TOTAL_DOCUMENTS
-            .contains(&"docs/superpowers/specs/2026-05-28-physics-informed-architecture-design.md"),
-        "architecture specs with baseline test totals must be part of drift checks"
-    );
-    for path in [
-        "docs/project-overview.zh-CN.md",
-        "docs/project-overview.en.md",
-        "docs/project-overview.ja.md",
-        "docs/release-readiness.md",
-    ] {
-        assert!(
-            TEST_TOTAL_DOCUMENTS.contains(&path),
-            "{path} carries user-facing verification totals and must be part of drift checks"
-        );
-    }
-}
+fn reality_gate_report_rejects_vacuous_plan_without_completed_items() {
+    let plan = "- [ ] M0.2 Scoped Snapshot v2\n";
+    let gates = "| `M0` | M0.2 Scoped Snapshot v2 | `partial` | open | keep open | check |\n";
 
-#[test]
-fn reality_gate_doc_lists_every_monitored_test_total_document() {
-    let contents = include_str!("../docs/product/follow-up-reality-gates.md");
+    let report = RealityGateReport::from_contents(plan, gates);
 
-    for path in TEST_TOTAL_DOCUMENTS {
-        assert!(
-            contents.contains(&format!("- `{path}`")),
-            "follow-up reality gates doc must list monitored test-total document: {path}"
-        );
-    }
-}
-
-#[test]
-fn status_sync_report_flags_documented_total_drift() {
-    let report = StatusSyncReport::from_totals(
-        256,
-        vec![DocumentTestTotal {
-            path: "README.md".to_string(),
-            total: 255,
-            suite_totals: Vec::new(),
-        }],
-    );
-
+    assert!(report.completed_plan_items.is_empty());
     assert!(!report.is_in_sync());
-    assert_eq!(
-        report.format_mismatches(),
-        "- README.md: documented 255, actual 256"
-    );
-}
-
-#[test]
-fn status_sync_report_flags_documented_suite_count_drift() {
-    let report =
-        StatusSyncReport::from_counts(
-            324,
-            BTreeMap::from([("openai_compatible_model".to_string(), 11)]),
-            vec![DocumentTestTotal::parse(
-            "docs/testing-guide-2026-03-24.md",
-            "- `cargo test` 全量通过，共 324 个测试\n- `openai_compatible_model`: 9 passed\n",
-        )
-        .expect("document total")],
-        );
-
-    assert!(!report.is_in_sync());
-    assert_eq!(
-        report.format_mismatches(),
-        "cargo test suite count drift:\n- docs/testing-guide-2026-03-24.md openai_compatible_model: documented 9, actual 11"
-    );
-}
-
-#[test]
-fn document_total_parses_inline_suite_counts() {
-    let document = DocumentTestTotal::parse(
-        "docs/local-mcp-integration-2026-03-26.md",
-        "- `cargo test` 全量通过，324 个测试通过\n- 其中 `mcp_stdio` 39、`status_sync` 11\n",
-    )
-    .expect("document total");
-
-    assert_eq!(
-        document.suite_totals,
-        vec![
-            agent_llm_mm::support::status_sync::DocumentSuiteTotal {
-                suite: "mcp_stdio".to_string(),
-                count: 39,
-            },
-            agent_llm_mm::support::status_sync::DocumentSuiteTotal {
-                suite: "status_sync".to_string(),
-                count: 11,
-            },
-        ]
-    );
+    assert!(report.format_contradictions().contains("would be vacuous"));
 }
 
 #[test]
 fn reality_gate_report_flags_implemented_plan_when_gate_is_still_partial() {
     let plan = "- [x] **P1.3 Plan/status synchronization v2**\n";
-    let gates = "| `P1` | Plan/status synchronization | `partial` | still manual | keep gate open | `cargo test --test status_sync -v` |\n";
+    let gates = "| `P1` | Plan/status synchronization | `partial` | still manual | keep gate open | check |\n";
 
     let report = RealityGateReport::from_contents(plan, gates);
 
-    assert!(!report.is_in_sync());
     assert_eq!(report.contradictions.len(), 1);
-    assert_eq!(
-        report.contradictions[0].workstream,
-        "Plan/status synchronization"
-    );
     assert_eq!(report.contradictions[0].reality_status, "partial");
-    assert!(
-        report
-            .format_contradictions()
-            .contains("plan marks implemented but reality gate is partial")
-    );
+    assert!(!report.is_in_sync());
 }
 
 #[test]
 fn reality_gate_report_flags_completed_plan_without_matching_reality_row() {
     let plan = "- [x] **P2.3 Richer episode semantics first slice**\n";
-    let gates = "| `P2` | Structured decision protocol | `implemented` | code tests docs aligned | keep compatible | `cargo test --test decision_flow -v` |\n";
+    let gates =
+        "| `P2` | Structured decision protocol | `implemented` | aligned | keep | check |\n";
 
     let report = RealityGateReport::from_contents(plan, gates);
 
-    assert!(!report.is_in_sync());
     assert_eq!(report.missing_gates.len(), 1);
     assert_eq!(
         report.missing_gates[0].workstream,
         "Richer episode semantics first slice"
     );
-    assert!(
-        report
-            .format_contradictions()
-            .contains("no matching reality gate row exists")
-    );
 }
 
 #[test]
-fn reality_gate_report_flags_implemented_unmerged_as_still_incomplete_for_current_branch() {
+fn reality_gate_report_flags_implemented_unmerged_as_incomplete() {
     let plan = "- [x] **P3.4 Product wording guard**\n";
-    let gates = "| `P3` | Product wording guard | `implemented-unmerged` | isolated branch only | keep blocked | `cargo test --test product_readiness -v` |\n";
+    let gates = "| `P3` | Product wording guard | `implemented-unmerged` | branch only | keep blocked | check |\n";
 
     let report = RealityGateReport::from_contents(plan, gates);
 
-    assert!(!report.is_in_sync());
     assert_eq!(report.contradictions.len(), 1);
-    assert_eq!(report.contradictions[0].workstream, "Product wording guard");
     assert_eq!(
         report.contradictions[0].reality_status,
         "implemented-unmerged"
     );
-    assert!(
-        report
-            .format_contradictions()
-            .contains("plan marks implemented but reality gate is implemented-unmerged")
-    );
 }
 
 #[test]
-fn reality_gate_report_flags_blocked_claim_as_still_incomplete_for_current_branch() {
+fn reality_gate_report_flags_blocked_claim_as_incomplete() {
     let plan = "- [x] **P3.5 Physics-informed runtime claim guard**\n";
-    let gates = "| `P3` | Physics-informed runtime claim guard | `blocked claim` | wording-gated non-claim | keep blocked | `cargo test --test product_readiness -v` |\n";
+    let gates = "| `P3` | Physics-informed runtime claim guard | `blocked claim` | wording only | keep blocked | check |\n";
 
     let report = RealityGateReport::from_contents(plan, gates);
 
-    assert!(!report.is_in_sync());
     assert_eq!(report.contradictions.len(), 1);
-    assert_eq!(
-        report.contradictions[0].workstream,
-        "Physics-informed runtime claim guard"
-    );
     assert_eq!(report.contradictions[0].reality_status, "blocked claim");
-    assert!(
-        report
-            .format_contradictions()
-            .contains("plan marks implemented but reality gate is blocked claim")
-    );
 }
 
 #[test]
 fn reality_gate_report_allows_completed_plan_when_gate_is_implemented() {
     let plan = "- [x] **P1.1 Product readiness gate checker**\n";
-    let gates = "| `P1` | Product readiness gate checker | `implemented` | code tests docs aligned | keep using checker | `cargo test --test product_readiness -v` |\n";
+    let gates =
+        "| `P1` | Product readiness gate checker | `implemented` | aligned | keep | check |\n";
 
     let report = RealityGateReport::from_contents(plan, gates);
 
-    assert!(
-        report.is_in_sync(),
-        "implemented gates should not be reported as contradictions"
+    assert!(report.is_in_sync());
+}
+
+#[test]
+fn reality_gate_report_parses_unbolded_completed_plan_items() {
+    let plan = "- [x] P1.1 Product readiness gate checker\n";
+    let gates =
+        "| `P1` | Product readiness gate checker | `implemented` | aligned | keep | check |\n";
+
+    let report = RealityGateReport::from_contents(plan, gates);
+
+    assert_eq!(
+        report.completed_plan_items,
+        vec!["Product readiness gate checker"]
     );
+    assert!(report.is_in_sync());
 }

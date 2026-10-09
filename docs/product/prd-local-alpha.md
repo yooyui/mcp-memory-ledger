@@ -2,9 +2,11 @@
 
 ## 1. 产品定位
 
-`agent_llm_mm` 的 Local Product Alpha 是 validated local MVP 之后的第一阶段产品化目标。
+MCP Memory Ledger 的 Local Product Alpha 是 validated local MVP 之后的第一阶段产品化目标。`agent_llm_mm` 只是当前 Rust crate、binary 和配置兼容标识。
 
 当前仓库的 MVP release gate 已经通过，项目可以表述为“已验证本地 MVP，进入正式产品化路线”。但 Local Product Alpha 仍需按本 PRD 和后续 product alpha gate 完成；在该 gate 通过前，不能声明 GA、生产级完整自治、远程团队服务或完整 self-governance agent。
+
+自 `2026-07-10` 起，具体执行顺序以 [全新项目规划](../plans/2026-07-10-product-replan.md) 为准：先完成 Truth and Safety 与 Trustworthy Recall，再进入本 PRD 的真实 Local Alpha evidence gate。
 
 Local Product Alpha 的目标是让一个真实本机用户能够安装、配置、运行、检查、备份并排查这个本地 MCP `stdio` memory 服务，同时继续保持 `run_reflection` 作为 identity / commitments 的唯一 durable write path。
 
@@ -51,7 +53,7 @@ Local Product Alpha 不承诺生产级高可用、远程团队管理、无人值
 
 ## 6. First-Run Contract
 
-A Local Alpha user can clone or unpack the repository, create one local config from the safe dev example via `bootstrap-local` or manual copy, run `doctor`, and start `serve` without editing source files. The supported first-run path is bootstrap / config first and doctor second: users must be able to validate config, provider shape, database path, dashboard status, daemon status, and runtime hooks before starting the MCP service.
+A Local Alpha user can clone or unpack the repository, create one local config from the safe dev example, run explicit `init`, verify with `doctor --read-only`, and start `serve` without editing source files. Old databases use explicit `migrate`; `serve` never bootstraps them implicitly. Users must be able to validate lifecycle status, provider shape, database path, dashboard status, daemon status, and runtime hooks before starting the MCP service.
 
 `bootstrap-local` is a local config helper, not an installer or production bootstrapper. It must not create secrets, overwrite an existing config, run `doctor`, start `serve`, enable daemon behavior, or imply that Local Alpha, Beta, remote/team mode, multi-tenancy, GA, or production-ready status is complete.
 
@@ -118,7 +120,8 @@ Local Product Alpha 后续完整 gate 应在 `docs/product/release-gate-local-al
 ## 10. 文档入口
 
 - 仓库首页：[`README.md`](../../README.md)
+- 项目起点：[`docs/origin-and-principles.md`](../origin-and-principles.md)
 - 文档总览：[`docs/document-map.md`](../document-map.md)
 - 当前实现状态：[`docs/project-status.md`](../project-status.md)
-- 正式产品化路线图：[`docs/superpowers/plans/2026-05-09-productization-roadmap.md`](../superpowers/plans/2026-05-09-productization-roadmap.md)
-- Local Product Alpha 任务列表：[`docs/superpowers/plans/2026-05-09-local-product-alpha-development-tasks.md`](../superpowers/plans/2026-05-09-local-product-alpha-development-tasks.md)
+- 当前路线图：[`docs/roadmap.md`](../roadmap.md)
+- 唯一 active plan：[`docs/plans/2026-07-10-product-replan.md`](../plans/2026-07-10-product-replan.md)

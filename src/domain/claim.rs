@@ -3,6 +3,56 @@ use crate::domain::{
     types::{Mode, Namespace, Owner},
 };
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ClaimReference(String);
+
+impl ClaimReference {
+    pub fn parse(value: impl Into<String>) -> Result<Self, DomainError> {
+        let value = value.into();
+        if value.is_empty() || value.trim() != value || value.chars().any(char::is_whitespace) {
+            return Err(DomainError::InvalidClaimReference);
+        }
+
+        let claim_id = value.strip_prefix("claim:").unwrap_or(&value);
+        if claim_id.is_empty() {
+            return Err(DomainError::InvalidClaimReference);
+        }
+
+        Ok(Self(claim_id.to_string()))
+    }
+
+    pub(crate) fn from_claim_id(claim_id: impl Into<String>) -> Self {
+        Self(claim_id.into())
+    }
+
+    pub fn claim_id(&self) -> &str {
+        &self.0
+    }
+
+    pub fn canonical(&self) -> String {
+        format!("claim:{}", self.claim_id())
+    }
+}
+
+impl serde::Serialize for ClaimReference {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.canonical())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ClaimReference {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Self::parse(value).map_err(|_| serde::de::Error::custom("invalid claim reference"))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ClaimDraft {
     owner: Owner,
@@ -66,6 +116,9 @@ impl ClaimDraft {
     pub fn validate(&self, evidence_count: usize) -> Result<(), DomainError> {
         if self.mode == Mode::Inferred && evidence_count == 0 {
             return Err(DomainError::InsufficientEvidence);
+        }
+        if !self.owner.is_accepted_for_new_writes() {
+            return Err(DomainError::UnknownOwnerNotWritable);
         }
 
         self.validate_namespace_owner()?;

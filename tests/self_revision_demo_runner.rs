@@ -120,6 +120,13 @@ fn demo_runner_writes_expected_artifacts_and_proves_decision_shift() {
             .to_string_lossy()
             .as_ref(),
     );
+    assert!(
+        timeline["baseline"]["event_reference"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("event:") && value.len() > "event:".len()),
+        "external demo artifact references use canonical event:<id> form"
+    );
+    assert_eq!(timeline["baseline"]["event_id"], Value::Null);
     assert_eq!(timeline["gate_before"]["blocked"], true);
     assert_eq!(timeline["negative_conflict"]["handled_conflict_rows"], 0);
     assert_eq!(timeline["positive_conflict"]["handled_conflict_rows"], 1);

@@ -47,4 +47,4 @@ if [[ -n "${output_dir}" ]]; then
   args+=(--output-md "${output_dir}/packaging-preflight-summary.md")
 fi
 
-cargo run --quiet --bin packaging_preflight_check -- "${args[@]}"
+cargo run --quiet --features release-tools --bin packaging_preflight_check -- "${args[@]}"

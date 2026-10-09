@@ -4,12 +4,14 @@
 
 ## 1. 环境前提
 
-- 已安装 Rust toolchain
+- 已安装 `rustup`；仓库会通过 `rust-toolchain.toml` 选择 Rust `1.95.0`，并安装 `rustfmt` / `clippy` 组件
 - `cargo` 可用
 - 使用 `zsh` 或 `bash`
 - 当前仓库内提供 macOS 原生入口脚本：
   - `./scripts/agent-llm-mm.sh bootstrap-local`
-  - `./scripts/agent-llm-mm.sh doctor`
+  - `./scripts/agent-llm-mm.sh init`
+  - `./scripts/agent-llm-mm.sh doctor --read-only`
+  - `./scripts/agent-llm-mm.sh migrate`
   - `./scripts/agent-llm-mm.sh serve`
   - `./scripts/run-self-revision-demo.sh`
   - `./scripts/generate-support-bundle.sh`
@@ -23,6 +25,15 @@ cd ~/code/agent-llm-mm
 ```
 
 请按你的本机实际路径替换上面的示例目录。
+
+进入仓库后先确认当前固定工具链：
+
+```zsh
+rustc --version
+cargo --version
+```
+
+`rustc` 应报告 `1.95.0`。支持下限与升级规则见 [Rust Toolchain Policy](toolchain-policy.md)；不要只改 `Cargo.toml` 或只改 `rust-toolchain.toml`。
 
 ## 3. 准备本地配置
 
@@ -67,24 +78,26 @@ database_url = "sqlite:///Users/<you>/Library/Application%20Support/agent-llm-mm
 
 ## 4. 本机预检
 
-本地产品化启动顺序是 bootstrap / config first, doctor second：先准备本机配置，再让 `doctor` 证明配置、SQLite 路径、provider 形态和 daemon 默认状态可用，最后启动 `serve`。仓库入口脚本的契约固定为 `[serve|doctor|bootstrap-local] [config_path]`；没有 `doctor-config` 或 `serve-config` alias，传入其它 mode 会返回 exit code `2`。
+本地产品化启动顺序是 config → explicit init/migrate → read-only doctor → serve。新库执行 `init`；旧库先用 `doctor --read-only` 查看状态，再显式 `migrate`。`serve` 和默认 `doctor` 都不会隐式 bootstrap。入口模式是 `serve|init|migrate|doctor|bootstrap-local`；doctor 可选 `--read-only`（默认）或显式 `--allow-bootstrap`。
 
 优先使用仓库内脚本：
 
 ```zsh
-./scripts/agent-llm-mm.sh doctor
+./scripts/agent-llm-mm.sh init
+./scripts/agent-llm-mm.sh doctor --read-only
 ```
 
 示例 profile 是结构模板，包含占位 `database_url`。先复制到 `agent-llm-mm.local.toml`，替换为本机可写 SQLite 路径后，再检查本机私有配置；如果选择 prod-local profile，还必须同时替换 `base_url`、`model`，并配置本机私有 `api_key` 或 `api_key_env`：
 
 ```zsh
-./scripts/agent-llm-mm.sh doctor agent-llm-mm.local.toml
+./scripts/agent-llm-mm.sh init agent-llm-mm.local.toml
+./scripts/agent-llm-mm.sh doctor --read-only agent-llm-mm.local.toml
 ```
 
 如果你想绕过脚本，也可以：
 
 ```zsh
-cargo run --quiet --bin agent_llm_mm -- doctor
+cargo run --quiet --bin agent_llm_mm -- doctor --read-only
 ```
 
 预期输出为 JSON，至少包含：
@@ -92,6 +105,7 @@ cargo run --quiet --bin agent_llm_mm -- doctor
 - `transport`
 - `database_url`
 - `provider`
+- `database_lifecycle`
 - `status`
 
 如需记录“本地首启模拟”证据，可以运行：
@@ -106,7 +120,7 @@ cargo run --quiet --bin agent_llm_mm -- doctor
 ./scripts/first-run-bootstrap-smoke-local.sh target/first-run-bootstrap-smoke/manual-check
 ```
 
-该脚本会在隔离输出目录内调用 `bootstrap-local`，把生成配置的 `database_url` 改成同目录下的 `first-run.sqlite`，再运行 `doctor` 并写出 `doctor.json` / `summary.json`。它会清理 `AGENT_LLM_MM_CONFIG` / `AGENT_LLM_MM_DATABASE_URL` 干扰，不写真实 HOME，不启动 `serve`，不调用 `product-smoke-local.sh`，也不证明真实 fresh-machine install 或 Windows runtime parity。
+该脚本会在隔离输出目录内调用 `bootstrap-local`，把生成配置的 `database_url` 改成同目录下的 `first-run.sqlite`，再显式运行 `init` 与 `doctor --read-only`，并写出 `init.json` / `doctor.json` / `summary.json`。它会清理环境变量干扰，不写真实 HOME，不启动 `serve`，不调用 product smoke，也不证明真实 fresh-machine install 或 Windows runtime parity。
 
 ## 5. 启动 MCP 服务
 
@@ -149,14 +163,20 @@ transport = "stdio"
 ```zsh
 cargo fmt --check
 git diff --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test
-./scripts/agent-llm-mm.sh doctor
+cargo clippy --all-targets -- -D warnings
+./scripts/test-tier.sh fast
+./scripts/test-tier.sh core
+./scripts/status-sync-check.sh
+./scripts/agent-llm-mm.sh doctor --read-only
 ```
+
+涉及发布证据、打包或 provider certification 工具时，再运行
+`cargo clippy --all-targets --all-features -- -D warnings` 和
+`./scripts/test-tier.sh full`。`release-tools` 不进入默认运行时构建。
 
 发布前请按 [Release Gate](release-gate.md) 跑完整 gate；本节只是 macOS 日常验证入口。
 如果判断 Local Product Alpha / product alpha 口径，还必须改用 [Local Alpha Release Gate](product/release-gate-local-alpha.md)；普通 `doctor` 通过不等于 Local Alpha 完成。
-需要本机 release soak 证据时，可以运行 `./scripts/release-soak-local.sh <candidate-name> [config_path]`。该命令写入 `target/reports/releases/<candidate-name>/`，只生成本机候选证据，不生成真实 fresh-machine、Windows runner、remote/team、上传、tag、安装包或发布认证证据。
+需要本机 release soak 证据时，可以运行 `./scripts/release-soak-local.sh <candidate-name> [config_path]`。该命令把数据库操作强制绑定到 `target/release-soak-runtime/<candidate-name>/release-soak.sqlite`，先显式 init，再只读 doctor；传入配置中的数据库路径不会成为 soak 写目标。它仍只生成本机候选证据，不生成真实 fresh-machine、Windows runner、remote/team、上传、tag、安装包或发布认证证据。
 
 如果需要检查 provider live evidence preflight 缺口，先运行本地只读 preflight：
 
@@ -187,7 +207,8 @@ cargo test
 
 | Symptom | Likely Cause | Verification | Fix |
 | --- | --- | --- | --- |
-| `doctor` cannot write SQLite | database path not writable or sandbox restriction | 先检查 `agent-llm-mm.local.toml` 的 `database_url` 与启动环境里的 `AGENT_LLM_MM_DATABASE_URL`；如果 `doctor` 已返回 JSON，再核对其中的 `database_url` | 设置 `AGENT_LLM_MM_DATABASE_URL` 为可写 SQLite URL / 文件路径，或在本地 TOML 固定可写 SQLite 路径后重试 |
+| `init` / `migrate` cannot write SQLite | database path not writable or sandbox restriction | 先用 `doctor --read-only` 查看 `database_lifecycle`，再检查 config 与 `AGENT_LLM_MM_DATABASE_URL` | 为显式 lifecycle command 设置可写 SQLite URL；不要为通过 doctor 而放宽正式库权限 |
+| `serve` reports database not ready | database missing, stale, or runtime defaults incomplete | 运行 `doctor --read-only` 查看 status / schema version | missing 用 `init`；旧 schema 用 `migrate`；只有明确接受写入时才用 `doctor --allow-bootstrap` |
 | MCP client starts the wrong binary | auxiliary `src/bin` target ambiguity | 检查客户端配置是否已显式带 `--bin agent_llm_mm`（如 `args = ["run", "--quiet", "--bin", "agent_llm_mm", "--", "serve"]`） | 使用 `agent-llm-mm.sh` 封装，或在客户端里固定 `cargo run --quiet --bin agent_llm_mm -- serve` |
 | dashboard not visible | `[dashboard].enabled` 为 false，或端口不可用 | 查看配置里的 `[dashboard]` 与 `enabled`，并确认 `./scripts/agent-llm-mm.sh doctor` 输出中的 dashboard 信息 | 启用 `[dashboard].enabled = true`，并换到可用的 `127.0.0.1` localhost 端口 |
 | model calls fail | provider 配置不完整 | 执行 `./scripts/agent-llm-mm.sh doctor`，确认 `provider`、`base_url`、`model` 均已回填 | 更新本地 TOML 的 provider 段；密钥只在本地文件里设置，不要提交 secrets |
@@ -251,7 +272,7 @@ port = 8787
 ./scripts/agent-llm-mm.sh serve
 ```
 
-浏览器访问 `http://127.0.0.1:8787/`。该面板只读，不会调用 `run_reflection` 或修改 SQLite。保持 `host = "127.0.0.1"` 作为本机使用边界；`base_path = "/agent-llm-mm"` 只表示路径挂载，不是认证、授权或公网暴露控制。不要在没有单独产品化 gate / auth 决策前把 dashboard 暴露到公网反向代理。
+浏览器访问 `http://127.0.0.1:8787/`。该面板只读，不会调用 `run_reflection` 或修改 SQLite。启用 dashboard 时，配置校验只接受 `localhost` 或 loopback IP；`0.0.0.0`、LAN IP 和域名会在启动前被拒绝。`base_path = "/agent-llm-mm"` 只表示路径挂载，不是认证、授权或公网暴露控制。不要在没有单独产品化 gate / auth 决策前把 dashboard 暴露到公网反向代理。
 
 当前面板标题为 `Memory-chan Live Desk`，内嵌两份生成图物料：
 

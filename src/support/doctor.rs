@@ -1,6 +1,10 @@
 use serde::Serialize;
 
 use crate::{
+    adapters::sqlite::{
+        DatabaseLifecycleReport, SqliteStore, initialize_database, inspect_database,
+        migrate_database, open_read_only_current_database,
+    },
     domain::{
         evidence_relation::{
             EVIDENCE_RELATION_AVAILABLE_NOT_SELECTED_STATUS, EVIDENCE_RELATION_NO_WIDENING_POLICY,
@@ -23,6 +27,7 @@ use super::remote_team::{
 pub struct DoctorReport {
     pub transport: TransportKind,
     pub database_url: String,
+    pub database_lifecycle: DatabaseLifecycleReport,
     pub provider: ModelProviderKind,
     pub base_url: Option<String>,
     pub model: Option<String>,
@@ -184,6 +189,17 @@ pub struct SystemPhaseCoverage {
 }
 
 pub async fn run_doctor(config: AppConfig) -> anyhow::Result<DoctorReport> {
+    run_doctor_with_bootstrap(config, false).await
+}
+
+pub async fn run_doctor_allow_bootstrap(config: AppConfig) -> anyhow::Result<DoctorReport> {
+    run_doctor_with_bootstrap(config, true).await
+}
+
+async fn run_doctor_with_bootstrap(
+    config: AppConfig,
+    allow_bootstrap: bool,
+) -> anyhow::Result<DoctorReport> {
     config.validate().map_err(anyhow::Error::msg)?;
 
     let base_url = config
@@ -191,10 +207,24 @@ pub async fn run_doctor(config: AppConfig) -> anyhow::Result<DoctorReport> {
         .map(|base_url| provider_base_url_shape(&base_url));
     let model = config.doctor_model();
 
-    let runtime = match config.transport {
-        TransportKind::Stdio => interfaces::mcp::validate_stdio_runtime(&config).await?,
+    let mut database_lifecycle = inspect_database(&config.database_url).await?;
+    if allow_bootstrap {
+        database_lifecycle = match database_lifecycle.status.as_str() {
+            "missing" => initialize_database(&config.database_url).await?,
+            "current" => database_lifecycle,
+            _ => migrate_database(&config.database_url).await?,
+        };
+        database_lifecycle.operation = "doctor_allow_bootstrap".to_string();
+        if !database_lifecycle.bootstrap_performed {
+            database_lifecycle.message =
+                "database already current; bootstrap permission was not used".to_string();
+        }
+    }
+    let operation_log = match config.transport {
+        TransportKind::Stdio => open_read_only_current_database(&config.database_url).await?,
     };
-    let daemon_observe_only = build_daemon_observe_only_diagnostics(&config, &runtime).await;
+    let daemon_observe_only =
+        build_daemon_observe_only_diagnostics(&config, operation_log.as_ref()).await;
     let provider_matrix = build_provider_matrix(&config);
     let remote_team_capability_inventory = remote_team_capability_inventory();
     let remote_team_security_gates = remote_team_security_gate_report();
@@ -204,6 +234,12 @@ pub async fn run_doctor(config: AppConfig) -> anyhow::Result<DoctorReport> {
     Ok(DoctorReport {
         transport: config.transport,
         database_url: config.database_url,
+        status: if database_lifecycle.is_current() {
+            "ok"
+        } else {
+            "attention_required"
+        },
+        database_lifecycle,
         provider: config.model_provider,
         base_url,
         model,
@@ -225,7 +261,6 @@ pub async fn run_doctor(config: AppConfig) -> anyhow::Result<DoctorReport> {
             .map(|hook| hook.to_string())
             .collect(),
         self_revision_write_path: interfaces::mcp::server::SELF_REVISION_WRITE_PATH,
-        status: "ok",
     })
 }
 
@@ -932,20 +967,32 @@ fn provider_base_url_shape(base_url: &str) -> String {
 
 async fn build_daemon_observe_only_diagnostics(
     config: &AppConfig,
-    operation_log: &impl OperationLogStore,
+    operation_log: Option<&SqliteStore>,
 ) -> DaemonObserveOnlyDiagnostics {
     let mut read_errors = Vec::new();
     let (trigger_candidates_observed, trigger_candidates_suppressed) = if config.daemon.enabled {
-        (
-            count_trigger_candidates(operation_log, OperationLogStatus::Failed, &mut read_errors)
+        if let Some(operation_log) = operation_log {
+            (
+                count_trigger_candidates(
+                    operation_log,
+                    OperationLogStatus::Failed,
+                    &mut read_errors,
+                )
                 .await,
-            count_trigger_candidates(
-                operation_log,
-                OperationLogStatus::Suppressed,
-                &mut read_errors,
+                count_trigger_candidates(
+                    operation_log,
+                    OperationLogStatus::Suppressed,
+                    &mut read_errors,
+                )
+                .await,
             )
-            .await,
-        )
+        } else {
+            read_errors.push(
+                "operation_log:unavailable:database is not current; read-only doctor did not bootstrap"
+                    .to_string(),
+            );
+            (0, 0)
+        }
     } else {
         (0, 0)
     };

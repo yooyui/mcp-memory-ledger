@@ -1,4 +1,4 @@
-# 本机 MCP 接入说明（2026-03-26，按 2026-06-08 fresh 验证更新）
+# 本机 MCP 接入说明（2026-03-26，按 2026-08-09 scoped Episode read 更新）
 
 ## 1. 目标
 
@@ -12,15 +12,15 @@
 
 ## 2. 推荐接入形态
 
-macOS 下优先入口是 `scripts/agent-llm-mm.sh`。它提供 `doctor` / `serve` 两种封装，并贴合当前 zsh / bash 环境。
+macOS 下优先入口是 `scripts/agent-llm-mm.sh`。它提供 `init` / `migrate` / `doctor` / `serve` 封装，并贴合当前 zsh / bash 环境。
 
-如果你想完全绕过脚本，也可直接运行 `cargo run --quiet --bin agent_llm_mm -- <serve|doctor>`。
+如果你想完全绕过脚本，也可直接运行 `cargo run --quiet --bin agent_llm_mm -- <serve|init|migrate|doctor>`。
 
 原因：
 
 - 可以从任意当前目录启动
 - 可以固化项目根目录
-- 可以统一 `serve` / `doctor` 两种模式
+- 可以统一显式数据库生命周期、只读诊断与 `serve` 模式
 - 后续切换为预编译二进制时，客户端配置无需大改
 
 入口脚本：
@@ -34,13 +34,15 @@ macOS 下优先入口是 `scripts/agent-llm-mm.sh`。它提供 `doctor` / `serve
 ```zsh
 cd ~/code/agent-llm-mm
 cp examples/agent-llm-mm.example.toml agent-llm-mm.local.toml
-./scripts/agent-llm-mm.sh doctor
+./scripts/agent-llm-mm.sh init
+./scripts/agent-llm-mm.sh doctor --read-only
 ```
 
 预期输出为 JSON，至少包含：
 
 - `transport`
 - `database_url`
+- `database_lifecycle`
 - `auto_reflection_runtime_hooks`
 - `self_revision_write_path`
 - `status`
@@ -48,9 +50,9 @@ cp examples/agent-llm-mm.example.toml agent-llm-mm.local.toml
 当前 `status = "ok"` 代表：
 
 - 配置已解析
-- SQLite 已可成功 bootstrap
+- SQLite schema / ledger / foreign keys / runtime defaults 已通过只读检查
 - provider 已按配置完成校验
-- 默认 runtime 初始化已通过
+- 当前数据库可由 `serve` 只读打开校验
 - `doctor` 还能保守显示当前 MCP runtime hook coverage 和 durable write path
 
 当前 `doctor` 输出里的 self-revision 相关字段，应按下面口径理解：
@@ -72,12 +74,13 @@ cp examples/agent-llm-mm.example.toml agent-llm-mm.local.toml
 - 存在后台 daemon / 定时自治进程
 - 所有 MCP 请求都会自动反思
 
-截至 `2026-06-08`，fresh 验证还包括：
+截至 `2026-07-10`，验证入口已减重为：
 
-- `cargo test -- --list --format terse` 当前枚举 395 个测试
-- 其中 `application_use_cases` 25、`failure_modes` 36、`mcp_stdio` 46、`sqlite_store` 23、`dashboard_http` 7、`daemon_config` 12、`support_bundle` 35、`provider_config` 18、`status_sync` 11、`local_alpha_release_evidence` 20、`product_completion_read_models` 15、`product_readiness` 15、`release_decision` 5、`non_mvp_product_tracks` 8
+- `./scripts/test-tier.sh fast` 用于主线短反馈；`./scripts/test-tier.sh core` 覆盖默认运行时
+- `./scripts/test-tier.sh full` 启用 `release-tools`，保留完整发布证据、打包与 provider certification 验证
+- `./scripts/status-sync-check.sh` 只检查 active plan / reality gate 和仓库 fixture，不再编译整套测试清单
 - self-revision demo package wrapper 可生成本地 artifact report
-- `release-soak-local.sh` 已提供本地 release evidence runner，可记录 candidate-specific doctor / dashboard HTTP / product smoke / first-run simulation / support bundle / evidence summary、compatibility matrix 和 release boundary 证据；它不生成 Windows runner、真实 fresh-machine、remote/team、上传、tag、安装包或发布认证证据
+- `release-soak-local.sh` 已提供本地 release evidence runner；数据库写入强制落到 candidate-isolated runtime path，`release-boundaries.json` 明确记录不接受正式库路径。它不生成 Windows runner、真实 fresh-machine、remote/team、上传、tag、安装包或发布认证证据
 - `product-readiness-check.sh` 已提供本地候选 readiness gate，能够把 release decision、release engineering、真实 fresh-machine、Windows parity、remote/team、安全/auth 和产品措辞缺口保持为 blocked
 - `release-evidence-index.sh`、`provider-certification-check.sh` 和 `packaging-preflight-check.sh` 已提供候选 evidence 索引、provider live-certification 缺口预检和 packaging 缺口预检；这些脚本不新增 MCP tool、不调用 provider endpoint、不生成 installer、不上传文件，也不改变 `stdio` 接入契约；provider evidence 占位文件和零字节/部分 packaging archive 不会被当作完整证据
 
@@ -131,7 +134,8 @@ args = ["run", "--quiet", "--bin", "agent_llm_mm", "--", "serve"]
 
 | Symptom | Likely Cause | Verification | Fix |
 | --- | --- | --- | --- |
-| `doctor` cannot write SQLite | database path not writable or sandbox restriction | 先检查本地 TOML 的 `database_url` 与启动环境里的 `AGENT_LLM_MM_DATABASE_URL`；如果 `doctor` 已返回 JSON，再核对其中的 `database_url` | 设定 `AGENT_LLM_MM_DATABASE_URL` 指向可写路径，或在本地 TOML 固定可写 SQLite 路径 |
+| `init` / `migrate` cannot write SQLite | database path not writable or sandbox restriction | 先运行 `doctor --read-only` 查看 `database_lifecycle`，再核对 config 与环境覆盖 | 仅为显式 lifecycle command 选择可写路径；不要为只读 doctor 放宽正式库权限 |
+| `serve` reports database not ready | missing / stale schema / incomplete defaults | 查看 `doctor --read-only` 的 lifecycle status | missing 用 `init`，旧库用 `migrate`；只有明确允许写入时才用 `doctor --allow-bootstrap` |
 | MCP client starts the wrong binary | auxiliary `src/bin` target ambiguity | 检查客户端是否显式传递 `--bin agent_llm_mm` | 优先使用脚本入口（`agent-llm-mm.sh` / `agent-llm-mm.ps1`），或固定 `--bin agent_llm_mm` |
 | dashboard not visible | `[dashboard].enabled = false` 或端口占用 | 查看配置和 `doctor` 输出 | 将 `enabled` 设为 `true`，并选择可用 localhost 端口 |
 | model calls fail | provider 配置不完整 | `doctor` 中确认 `provider`、`base_url`、`model` | 补齐本地 TOML 的 provider 配置（仅本地文件，勿提交 API key） |
@@ -146,6 +150,12 @@ args = ["run", "--quiet", "--bin", "agent_llm_mm", "--", "serve"]
 ### 已实现
 
 - `ingest_interaction`
+- `search_memory`（M1.1.1 Event、M1.1.2 Claim、M1.1.3 Episode、M1.1.4 Reflection provenance recall 与 M1.1.6 跨类型 union 首片；显式 `namespace` 必填，provider 离线可用；省略 `record_type` / `record_types` 时仍为 Event）
+- `get_memory`（M1.2.1 Event + M1.2.2 Claim + M1.2.4 Episode + M1.2.5 Reflection lookup 首片；显式 `namespace` + stable `id` 必填；省略 `record_type` 保持 Event，其余类型要求显式 `record_type`；跨 scope / record-only Reflection 返回 `record: null`）
+- `get_reflection_history`（M1.2.3 exact scoped Claim revision chain 首片；显式 `namespace` + `claim_reference` 必填，limit 默认 20、范围 `1..=100`）
+- `get_self_model_history`（M1.2.6 scoped identity/commitment revision audit 首片；显式 `namespace` + `history_type` 必填，limit 默认 20、范围 `1..=100`）
+- `get_evidence_relation`（M1.1.5 scoped evidence-relation runtime 首片；显式 `namespace` + `trigger_window_event_ids` 必填，`selected_evidence_event_ids` / `selection_basis` 可选）
+- `supersede_memory`（M1.2.7 scoped Claim audited supersede 首片；显式 `namespace` + `claim_reference` + `replacement_claim` + `replacement_evidence_event_ids` + `summary` 必填；复用 `run_reflection`，默认不 hard delete）
 - `build_self_snapshot`
 - `run_reflection`
 - `doctor` / `serve`
@@ -154,6 +164,17 @@ args = ["run", "--quiet", "--bin", "agent_llm_mm", "--", "serve"]
 - `openai-compatible` provider
 - OpenRouter provider（通过 OpenAI-compatible `/chat/completions` transport；配置示例和本地 stub 不是 live evidence，显式 `--live` runner 才能生成 bounded live preflight evidence）
 - 配置文件驱动的 provider 选择
+- `search_memory` 的 Event 路径支持 exact event reference、event kind、inclusive RFC3339 time window 和 `1..=100` limit；返回 canonical event ID、scope、时间、摘要和 claim/episode provenance。
+- additive `record_type = Claim` 路径支持 canonical/raw `claim_reference`、`claim_status`、`mode` 和 `1..=100` limit；省略 `claim_status` 时默认 `Active`。结果包含 canonical `claim:<id>`、subject/predicate/object、mode/status、canonical evidence event references、episode references 和直接 source/superseded reflection links。claims 没有 stored `recorded_at`，因此该路径拒绝 event reference、event kind 与时间过滤。
+- additive `record_type = Episode` 路径支持 exact opaque `episode_reference` 与 `1..=100` limit。SQLite 先通过同 scope Event membership 收窄，再按最新 scoped Event 元组稳定排序；结果原样返回持久化 Episode reference，并包含由同 scope 数据证明的 canonical Event/Claim provenance。该首片不规范化 `episode:` 前缀，也不返回未持久化的 objective/outcome/lesson。
+- additive `record_type = Reflection` 路径支持 exact persisted `reflection_reference` 与 `1..=100` limit。一条 Reflection 只在 superseded Claim 属于请求 scope、且 replacement 为空或同 scope 时可见；record-only 行没有 Claim anchor，不能推断 namespace。mixed-scope edge 整条隐藏。`get_memory` 已接受 scoped Reflection lookup。
+- 四种 `search_memory` 路径都先在 SQLite 按 server-derived owner + namespace 或等价 scope attribution 收窄，再应用类型专属 filter/limit；它们只读、provider-free，跨 scope exact reference 返回空结果。additive `record_types` 可在同一 scope 内合并这些已有 tagged record，并按 recorded_at / type / id 稳定收口；union 拒绝类型专属 filter。当前仍不是完整 versioned ledger / correction 合同。
+- `get_memory` 复用相同 scoped read service 返回单条 Event、Claim、Episode 或 scoped Reflection。省略 `record_type` 时保持原 Event 语义，包括 raw Event ID；Claim 要求显式 `record_type = Claim`，并接受 canonical/raw Claim ID，从而避免 `claim:*` raw Event ID 的判型歧义。精确 Claim lookup 不套用 search 的默认 Active 过滤，因此 Active、Disputed、Superseded 都可按 ID 返回。Episode / Reflection 要求显式类型，并把 `id` 当作 opaque exact persisted reference。Reflection lookup 复用 M1.1.4 归属：record-only / missing / cross-scope 都返回 `record: null`。它不提供 unscoped existence probe，也不代表 versioned identity/commitment ledger 或 record-only history 已完成。
+- `get_reflection_history` 接受 canonical/raw Claim ID，以 exact scoped Claim 为锚点递归读取 superseded/replacement 双向链，并按 newest-first 返回 reflection ID、时间、摘要、canonical superseded/replacement Claim references 与同 scope canonical evidence references。missing/cross-scope anchor 返回空，mixed-scope edge 整条隐藏；读取只读且不依赖 provider，operation metadata 仅含 `history_type`、`result_count`、`has_more`。
+- `get_self_model_history` 按 `history_type = Identity` 或 `Commitment` 读取现有 reflection 审计列，只返回能通过同 scope Claim 归属的 newest-first 修订。record-only 更新与 mixed-scope edge 保持不可见。limit 默认 20、范围 `1..=100`，并用 `has_more` 表示截断。该首片不是 versioned identity/commitment ledger，也不提供 rollback。
+- `get_evidence_relation` 接受裸 ID 或 `event:<id>` 组成的 trigger window，先保序去重再与请求 owner+namespace 做 intersect-only 收窄。missing / cross-scope trigger ID 从窗口省略；selected 必须是 scoped window 的子集，否则 fail closed。结果返回 canonical `event:<id>`、window_rank、selected / available-not-selected、binary weight 与 rejection reason。路径只读、provider-free，operation metadata 仅含 `report_type`、`trigger_window_size`、`selected_count`、`result_count`。它不引入 ranking 或 widening。
+- `supersede_memory` 接受 canonical/raw Claim ID 与至少一条 evidence，先确认 target 与 evidence 都在请求 namespace，再调用既有 `run_reflection` 事务。旧 Claim 变为 `Superseded`，历史接口仍可回看；missing / cross-scope 输入 fail closed。operation metadata 仅含 `correction_type` 与 `durable_write_path = run_reflection`。它不是第二条 durable write path，也不覆盖 identity/commitment 或 Event/Episode/Reflection 纠错。
+- Episode / Reflection lookup、Claim history、self-model audit 与 Claim supersede 首片都不覆盖 versioned identity/commitment ledger 或 record-only reflection history。Episode reference 仍是 opaque persisted string；这些切片都没有 schema migration/index，保留 technical-MVP 表扫描性能边界。
 - trigger-ledger-backed automatic self-revision MVP
   - 当前 MCP-wired automatic path 只有 4 条：
     - `ingest_interaction -> failure`
@@ -187,6 +208,8 @@ args = ["run", "--quiet", "--bin", "agent_llm_mm", "--", "serve"]
 
 ### 未实现
 
+- versioned identity/commitment ledger 和 record-only Reflection history
+- Event/Episode/Reflection 纠错，以及真实客户端 M1 退出故事
 - richer 自动 evidence lookup
 - richer evidence weighting / relation / ranking
 - richer reflection 语义（当前已有最小 `identity_core` / `commitments` 深层修订，但仍不是 richer schema / versioned policy）
@@ -250,7 +273,8 @@ SQLite 非常适合本机 MVP，但它仍然是单写者模型。若多个 AI �
 
 - MCP 协议通信依赖标准输入输出
 - 不应在 `serve` 模式额外向 `stdout` 打印杂讯
-- 诊断信息应放到 `doctor` 模式或日志侧
+- tracing 诊断固定写入 `stderr`；`doctor` 的 JSON 与 `serve` 的 MCP frames 保持在 `stdout`
+- 启用无认证 dashboard 时，host 只允许 `localhost` 或 loopback IP；非 loopback 配置会在启动前失败
 
 ### 8.5 能力边界
 

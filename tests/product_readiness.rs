@@ -565,7 +565,11 @@ fn product_readiness_script_exposes_candidate_evidence_gate() {
 
     assert!(script.contains("usage: ./scripts/product-readiness-check.sh <release-candidate>"));
     assert!(script.contains("candidate name must contain only letters"));
-    assert!(script.contains("cargo run --quiet --bin product_readiness_check --"));
+    assert!(
+        script.contains(
+            "cargo run --quiet --features release-tools --bin product_readiness_check --"
+        )
+    );
     assert!(script.contains("--release-candidate"));
     assert!(
         !script.contains(" ssh "),

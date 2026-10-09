@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
+    net::IpAddr,
     path::{Path, PathBuf},
+    str::FromStr,
 };
 
 pub const DATABASE_URL_ENV_VAR: &str = "AGENT_LLM_MM_DATABASE_URL";
@@ -97,8 +99,19 @@ impl DashboardConfig {
         if !self.base_path.starts_with('/') {
             return Err("dashboard.base_path must start with /".to_string());
         }
+        if self.enabled && !is_loopback_dashboard_host(&self.host) {
+            return Err(
+                "dashboard.host must be localhost or a loopback IP while dashboard authentication is unavailable"
+                    .to_string(),
+            );
+        }
         Ok(())
     }
+}
+
+fn is_loopback_dashboard_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || IpAddr::from_str(host).is_ok_and(|address| address.is_loopback())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -16,39 +16,49 @@ use uuid::Uuid;
 use crate::{
     adapters::{
         model::{mock::MockModel, openai_compatible::OpenAiCompatibleModel},
-        sqlite::SqliteStore,
+        sqlite::{SqliteStore, open_current_database},
     },
     application::{
         auto_reflect_if_needed::{self, AutoReflectInput, RecursionGuard},
         build_self_snapshot,
         daemon::DaemonHandle,
-        decide_with_snapshot, ingest_interaction,
+        decide_with_snapshot, get_evidence_relation, get_memory, get_reflection_history,
+        get_self_model_history, ingest_interaction,
         ingest_interaction::IngestInput,
         run_reflection,
         run_reflection::ReflectionInput,
+        search_memory, supersede_memory,
     },
+    domain::event::EventReference,
     domain::identity_core::IdentityCore,
     domain::operation_log::{ActorKind, OperationLogEntry, OperationLogKind, OperationLogStatus},
     domain::self_revision::{
         SELF_REVISION_DURABLE_WRITE_PATH, SelfRevisionProposal, SelfRevisionRequest, TriggerType,
     },
+    domain::snapshot::SnapshotTimeWindow,
+    domain::types::MemoryScope,
     error::AppError,
     interfaces::dashboard::{
         DashboardHandle, DashboardObserver, DashboardRuntimeInfo, OperationRecorder,
         OperationStatus, start_dashboard_service_with_operation_log,
     },
     ports::{
-        ClaimStatus, ClaimStore, Clock, CommitmentStore, EpisodeStore, EventStore, EvidenceQuery,
-        IdGenerator, IdentityStore, IngestTransaction, IngestTransactionRunner, ModelDecision,
-        ModelDecisionRequest, ModelPort, OperationLogStore, ReflectionStore, ReflectionTransaction,
-        ReflectionTransactionRunner, StoredClaim, StoredEvent, StoredReflection,
-        StoredTriggerLedgerEntry, TriggerLedgerStatus, TriggerLedgerStore,
+        ClaimReadRecord, ClaimRecordQuery, ClaimReflectionHistoryPage, ClaimReflectionHistoryQuery,
+        ClaimStatus, ClaimStore, Clock, CommitmentStore, EpisodeReadRecord, EpisodeRecordQuery,
+        EpisodeStore, EventReadRecord, EventRecordQuery, EventStore, EvidenceQuery, IdGenerator,
+        IdentityStore, IngestTransaction, IngestTransactionRunner, MemoryReadStore, ModelDecision,
+        ModelDecisionRequest, ModelPort, OperationLogStore, ReflectionReadRecord,
+        ReflectionRecordQuery, ReflectionStore, ReflectionTransaction, ReflectionTransactionRunner,
+        ScopedEventIdQuery, SelfModelHistoryPage, SelfModelHistoryQuery, StoredClaim, StoredEvent,
+        StoredReflection, StoredTriggerLedgerEntry, TriggerLedgerStatus, TriggerLedgerStore,
     },
     support::config::{AppConfig, ModelConfig, ModelProviderKind, TransportKind},
 };
 
 use super::dto::{
-    BuildSelfSnapshotParams, DecideWithSnapshotParams, IngestInteractionParams, RunReflectionParams,
+    BuildSelfSnapshotParams, DecideWithSnapshotParams, GetEvidenceRelationParams, GetMemoryParams,
+    GetReflectionHistoryParams, GetSelfModelHistoryParams, IngestInteractionParams,
+    RunReflectionParams, SearchMemoryParams, SupersedeMemoryParams,
 };
 
 pub const AUTO_REFLECTION_RUNTIME_HOOKS: [&str; 4] = [
@@ -66,7 +76,7 @@ pub async fn run_stdio_server() -> Result<()> {
 
 pub async fn run_stdio_server_with_config(config: AppConfig) -> Result<()> {
     config.validate().map_err(anyhow::Error::msg)?;
-    let store = SqliteStore::bootstrap(&config.database_url).await?;
+    let store = open_current_database(&config.database_url).await?;
     let (dashboard_observer, _dashboard_handle) =
         start_configured_dashboard(&config, Some(store.clone())).await?;
     let daemon_handle = start_configured_daemon(&config);
@@ -97,9 +107,8 @@ fn start_configured_daemon(config: &AppConfig) -> Option<DaemonHandle> {
 }
 
 pub async fn validate_stdio_runtime(config: &AppConfig) -> Result<SqliteStore, AppError> {
-    Runtime::bootstrap(config, DashboardObserver::disabled())
-        .await
-        .map(|runtime| runtime.store)
+    config.validate().map_err(AppError::Message)?;
+    open_current_database(&config.database_url).await
 }
 
 async fn start_configured_dashboard(
@@ -285,6 +294,311 @@ impl Server {
     }
 
     #[tool(
+        description = "Search complete event, claim, scoped Episode, or scoped Reflection provenance records in one explicit local memory namespace. Omitted record_type preserves Event behavior. Additive record_types runs a scoped union of the requested types with a stable recorded_at / type / id order. Event queries support exact reference, kind, inclusive time range, and bounded recent-first results. Claim queries support exact reference, status, and mode; claims have no stored recorded_at timestamp. Episode queries support an exact persisted episode_reference. Reflection queries attribute rows only through same-scope Claim endpoints, hide mixed-scope edges, and exclude record-only reflections. Union queries reject type-specific filters.",
+        input_schema = rmcp::handler::server::tool::cached_schema_for_type::<Parameters<SearchMemoryParams>>()
+    )]
+    async fn search_memory(&self, raw_params: JsonObject) -> Result<CallToolResult, McpError> {
+        let correlation_id = generated_mcp_correlation_id();
+        let params = map_tool_error(
+            &self.runtime,
+            "search_memory",
+            None,
+            Some(correlation_id.clone()),
+            decode_tool_params::<SearchMemoryParams>(raw_params),
+        )
+        .await?;
+        let dashboard_namespace = Some(params.namespace.clone());
+        let input = map_tool_error(
+            &self.runtime,
+            "search_memory",
+            dashboard_namespace.clone(),
+            Some(correlation_id.clone()),
+            search_memory::SearchMemoryInput::try_from(params),
+        )
+        .await?;
+        let log_record_type = if input.is_union() {
+            "union".to_string()
+        } else {
+            input.record_types[0].as_str().to_string()
+        };
+        let result = map_tool_error(
+            &self.runtime,
+            "search_memory",
+            dashboard_namespace.clone(),
+            Some(correlation_id.clone()),
+            search_memory::execute(&self.runtime, input).await,
+        )
+        .await?;
+        self.runtime.dashboard.record_tool_ok(
+            "search_memory",
+            dashboard_namespace.clone(),
+            Some(correlation_id.clone()),
+            format!(
+                "memory search returned {} {} records",
+                result.records.len(),
+                log_record_type
+            ),
+            &serde_json::json!({
+                "record_type": log_record_type,
+                "result_count": result.records.len(),
+            }),
+        );
+        self.runtime
+            .record_tool_operation(
+                ToolOperationRecord::ok("search_memory", dashboard_namespace, Some(correlation_id))
+                    .with_response_summary(serde_json::json!({
+                        "record_type": log_record_type,
+                        "result_count": result.records.len(),
+                    })),
+            )
+            .await;
+        structured(result)
+    }
+
+    #[tool(
+        description = "Get one complete event, claim, scoped Episode, or scoped Reflection record by stable ID inside one explicit local memory namespace. Omitted record_type preserves Event behavior. Claim, Episode, and Reflection lookup require their explicit record_type. Episode and Reflection ids are opaque exact persisted references. Record-only reflections stay invisible. Canonical and raw Event/Claim IDs are supported. A missing or cross-scope record returns null without widening the query.",
+        input_schema = rmcp::handler::server::tool::cached_schema_for_type::<Parameters<GetMemoryParams>>()
+    )]
+    async fn get_memory(&self, raw_params: JsonObject) -> Result<CallToolResult, McpError> {
+        let correlation_id = generated_mcp_correlation_id();
+        let params = map_tool_error(
+            &self.runtime,
+            "get_memory",
+            None,
+            Some(correlation_id.clone()),
+            decode_tool_params::<GetMemoryParams>(raw_params),
+        )
+        .await?;
+        let dashboard_namespace = Some(params.namespace.clone());
+        let input = map_tool_error(
+            &self.runtime,
+            "get_memory",
+            dashboard_namespace.clone(),
+            Some(correlation_id.clone()),
+            get_memory::GetMemoryInput::try_from(params),
+        )
+        .await?;
+        let record_type = input.id.record_type();
+        let result = map_tool_error(
+            &self.runtime,
+            "get_memory",
+            dashboard_namespace.clone(),
+            Some(correlation_id.clone()),
+            get_memory::execute(&self.runtime, input).await,
+        )
+        .await?;
+        let found = result.record.is_some();
+        self.runtime.dashboard.record_tool_ok(
+            "get_memory",
+            dashboard_namespace.clone(),
+            Some(correlation_id.clone()),
+            if found {
+                format!("memory lookup found one {} record", record_type.as_str())
+            } else {
+                format!("memory lookup found no {} record", record_type.as_str())
+            },
+            &serde_json::json!({"record_type": record_type.as_str(), "found": found}),
+        );
+        self.runtime
+            .record_tool_operation(
+                ToolOperationRecord::ok("get_memory", dashboard_namespace, Some(correlation_id))
+                    .with_response_summary(
+                        serde_json::json!({"record_type": record_type.as_str(), "found": found}),
+                    ),
+            )
+            .await;
+        structured(result)
+    }
+
+    #[tool(
+        description = "Read the newest claim-linked reflection records reachable from one exact claim inside an explicit local memory namespace. Missing and cross-scope claims return an empty history; mixed-scope revision edges are excluded. Identity and commitment revision audits are read through get_self_model_history.",
+        input_schema = rmcp::handler::server::tool::cached_schema_for_type::<Parameters<GetReflectionHistoryParams>>()
+    )]
+    async fn get_reflection_history(
+        &self,
+        raw_params: JsonObject,
+    ) -> Result<CallToolResult, McpError> {
+        let correlation_id = generated_mcp_correlation_id();
+        let params = map_tool_error(
+            &self.runtime,
+            "get_reflection_history",
+            None,
+            Some(correlation_id.clone()),
+            decode_tool_params::<GetReflectionHistoryParams>(raw_params),
+        )
+        .await?;
+        let dashboard_namespace = Some(params.namespace.clone());
+        let input = map_tool_error(
+            &self.runtime,
+            "get_reflection_history",
+            dashboard_namespace.clone(),
+            Some(correlation_id.clone()),
+            get_reflection_history::GetReflectionHistoryInput::try_from(params),
+        )
+        .await?;
+        let result = map_tool_error(
+            &self.runtime,
+            "get_reflection_history",
+            dashboard_namespace.clone(),
+            Some(correlation_id.clone()),
+            get_reflection_history::execute(&self.runtime, input).await,
+        )
+        .await?;
+        let response_summary = serde_json::json!({
+            "history_type": "claim",
+            "result_count": result.reflections.len(),
+            "has_more": result.has_more,
+        });
+        self.runtime.dashboard.record_tool_ok(
+            "get_reflection_history",
+            dashboard_namespace.clone(),
+            Some(correlation_id.clone()),
+            format!(
+                "claim reflection history returned {} record(s)",
+                result.reflections.len()
+            ),
+            &response_summary,
+        );
+        self.runtime
+            .record_tool_operation(
+                ToolOperationRecord::ok(
+                    "get_reflection_history",
+                    dashboard_namespace,
+                    Some(correlation_id),
+                )
+                .with_response_summary(response_summary),
+            )
+            .await;
+        structured(result)
+    }
+
+    #[tool(
+        description = "Read scoped identity or commitment revision audits persisted on reflections inside one explicit local memory namespace. Only claim-attributed reflections are visible. Record-only identity or commitment updates stay hidden. This first slice does not version identity_claims or commitments tables and does not provide rollback.",
+        input_schema = rmcp::handler::server::tool::cached_schema_for_type::<Parameters<GetSelfModelHistoryParams>>()
+    )]
+    async fn get_self_model_history(
+        &self,
+        raw_params: JsonObject,
+    ) -> Result<CallToolResult, McpError> {
+        let correlation_id = generated_mcp_correlation_id();
+        let params = map_tool_error(
+            &self.runtime,
+            "get_self_model_history",
+            None,
+            Some(correlation_id.clone()),
+            decode_tool_params::<GetSelfModelHistoryParams>(raw_params),
+        )
+        .await?;
+        let dashboard_namespace = Some(params.namespace.clone());
+        let input = map_tool_error(
+            &self.runtime,
+            "get_self_model_history",
+            dashboard_namespace.clone(),
+            Some(correlation_id.clone()),
+            get_self_model_history::GetSelfModelHistoryInput::try_from(params),
+        )
+        .await?;
+        let history_type = input.history_kind.as_str().to_string();
+        let result = map_tool_error(
+            &self.runtime,
+            "get_self_model_history",
+            dashboard_namespace.clone(),
+            Some(correlation_id.clone()),
+            get_self_model_history::execute(&self.runtime, input).await,
+        )
+        .await?;
+        let response_summary = serde_json::json!({
+            "history_type": history_type,
+            "result_count": result.records.len(),
+            "has_more": result.has_more,
+        });
+        self.runtime.dashboard.record_tool_ok(
+            "get_self_model_history",
+            dashboard_namespace.clone(),
+            Some(correlation_id.clone()),
+            format!(
+                "{history_type} history returned {} record(s)",
+                result.records.len()
+            ),
+            &response_summary,
+        );
+        self.runtime
+            .record_tool_operation(
+                ToolOperationRecord::ok(
+                    "get_self_model_history",
+                    dashboard_namespace,
+                    Some(correlation_id),
+                )
+                .with_response_summary(response_summary),
+            )
+            .await;
+        structured(result)
+    }
+
+    #[tool(
+        description = "Read a scoped evidence-relation report for one explicit local memory namespace. The trigger window is the caller-provided event ID list intersected with events that exist in that owner+namespace. Selected IDs must stay inside the scoped window. Missing and cross-scope trigger IDs are omitted without widening; this first slice does not rank or score evidence.",
+        input_schema = rmcp::handler::server::tool::cached_schema_for_type::<Parameters<GetEvidenceRelationParams>>()
+    )]
+    async fn get_evidence_relation(
+        &self,
+        raw_params: JsonObject,
+    ) -> Result<CallToolResult, McpError> {
+        let correlation_id = generated_mcp_correlation_id();
+        let params = map_tool_error(
+            &self.runtime,
+            "get_evidence_relation",
+            None,
+            Some(correlation_id.clone()),
+            decode_tool_params::<GetEvidenceRelationParams>(raw_params),
+        )
+        .await?;
+        let dashboard_namespace = Some(params.namespace.clone());
+        let input = map_tool_error(
+            &self.runtime,
+            "get_evidence_relation",
+            dashboard_namespace.clone(),
+            Some(correlation_id.clone()),
+            get_evidence_relation::GetEvidenceRelationInput::try_from(params),
+        )
+        .await?;
+        let result = map_tool_error(
+            &self.runtime,
+            "get_evidence_relation",
+            dashboard_namespace.clone(),
+            Some(correlation_id.clone()),
+            get_evidence_relation::execute(&self.runtime, input).await,
+        )
+        .await?;
+        let response_summary = serde_json::json!({
+            "report_type": "evidence_relation",
+            "trigger_window_size": result.trigger_window_size,
+            "selected_count": result.selected_count,
+            "result_count": result.relations.len(),
+        });
+        self.runtime.dashboard.record_tool_ok(
+            "get_evidence_relation",
+            dashboard_namespace.clone(),
+            Some(correlation_id.clone()),
+            format!(
+                "evidence relation returned {} row(s)",
+                result.relations.len()
+            ),
+            &response_summary,
+        );
+        self.runtime
+            .record_tool_operation(
+                ToolOperationRecord::ok(
+                    "get_evidence_relation",
+                    dashboard_namespace,
+                    Some(correlation_id),
+                )
+                .with_response_summary(response_summary),
+            )
+            .await;
+        structured(result)
+    }
+
+    #[tool(
         description = "Build a self snapshot from the persisted memory store.",
         input_schema = rmcp::handler::server::tool::cached_schema_for_type::<Parameters<BuildSelfSnapshotParams>>()
     )]
@@ -301,6 +615,15 @@ impl Server {
             decode_tool_params::<BuildSelfSnapshotParams>(raw_params),
         )
         .await?;
+        let dashboard_namespace = params.namespace.clone();
+        let snapshot_input = map_tool_error(
+            &self.runtime,
+            "build_self_snapshot",
+            dashboard_namespace.clone(),
+            Some(correlation_id.clone()),
+            build_self_snapshot::BuildSelfSnapshotInput::try_from(params.clone()),
+        )
+        .await?;
         let auto_reflect_input = map_tool_error(
             &self.runtime,
             "build_self_snapshot",
@@ -309,7 +632,6 @@ impl Server {
             AutoReflectInput::from_build_snapshot(&params),
         )
         .await?;
-        let dashboard_namespace = params.auto_reflect_namespace.clone();
         if let Some(auto_reflect_input) = auto_reflect_input {
             let auto_reflect_namespace = Some(auto_reflect_input.namespace.as_str().to_string());
             let auto_reflect_trigger_type = auto_reflect_input.trigger_type;
@@ -365,7 +687,7 @@ impl Server {
             "build_self_snapshot",
             dashboard_namespace.clone(),
             Some(correlation_id.clone()),
-            build_self_snapshot::execute(&self.runtime, params.into()).await,
+            build_self_snapshot::execute(&self.runtime, snapshot_input).await,
         )
         .await?;
         self.runtime.dashboard.record_tool_ok(
@@ -394,7 +716,7 @@ impl Server {
     }
 
     #[tool(
-        description = "Decide on an action using a provided self snapshot.",
+        description = "Return a bounded experimental action-string result using a provided self snapshot and server-side commitments.",
         input_schema = rmcp::handler::server::tool::cached_schema_for_type::<Parameters<DecideWithSnapshotParams>>()
     )]
     async fn decide_with_snapshot(
@@ -482,7 +804,7 @@ impl Server {
         let summary = if result.blocked {
             "decision blocked by commitment gate".to_string()
         } else {
-            "decision returned model action".to_string()
+            "decision returned experimental non-authoritative model action".to_string()
         };
         self.runtime.dashboard.record_tool_ok(
             "decide_with_snapshot",
@@ -498,14 +820,73 @@ impl Server {
                     dashboard_namespace,
                     Some(correlation_id),
                 )
-                .with_response_summary(serde_json::json!({ "blocked": result.blocked })),
+                .with_response_summary(serde_json::json!({
+                    "blocked": result.blocked,
+                    "decision_authority": result.decision_authority,
+                    "policy_scope": result.policy_scope,
+                })),
             )
             .await;
         structured(result)
     }
 
     #[tool(
-        description = "Record a reflection that supersedes an existing claim.",
+        description = "Supersede one scoped claim with an explicit replacement and same-scope evidence. The write reuses the existing run_reflection transaction, marks the old claim superseded, and does not hard delete. Missing, cross-scope, or mixed-namespace targets fail closed. Identity and commitment updates stay on run_reflection.",
+        input_schema = rmcp::handler::server::tool::cached_schema_for_type::<Parameters<SupersedeMemoryParams>>()
+    )]
+    async fn supersede_memory(&self, raw_params: JsonObject) -> Result<CallToolResult, McpError> {
+        let correlation_id = generated_mcp_correlation_id();
+        let params = map_tool_error(
+            &self.runtime,
+            "supersede_memory",
+            None,
+            Some(correlation_id.clone()),
+            decode_tool_params::<SupersedeMemoryParams>(raw_params),
+        )
+        .await?;
+        let dashboard_namespace = Some(params.namespace.clone());
+        let input = map_tool_error(
+            &self.runtime,
+            "supersede_memory",
+            dashboard_namespace.clone(),
+            Some(correlation_id.clone()),
+            supersede_memory::SupersedeMemoryInput::try_from(params),
+        )
+        .await?;
+        let result = map_tool_error(
+            &self.runtime,
+            "supersede_memory",
+            dashboard_namespace.clone(),
+            Some(correlation_id.clone()),
+            supersede_memory::execute(&self.runtime, input).await,
+        )
+        .await?;
+        let response_summary = serde_json::json!({
+            "correction_type": "supersede",
+            "durable_write_path": result.durable_write_path,
+        });
+        self.runtime.dashboard.record_tool_ok(
+            "supersede_memory",
+            dashboard_namespace.clone(),
+            Some(correlation_id.clone()),
+            "scoped claim superseded through run_reflection".to_string(),
+            &response_summary,
+        );
+        self.runtime
+            .record_tool_operation(
+                ToolOperationRecord::ok(
+                    "supersede_memory",
+                    dashboard_namespace,
+                    Some(correlation_id),
+                )
+                .with_response_summary(response_summary),
+            )
+            .await;
+        structured(result)
+    }
+
+    #[tool(
+        description = "Record a reflection that supersedes an existing claim. Scoped claim correction with explicit namespace uses supersede_memory.",
         input_schema = rmcp::handler::server::tool::cached_schema_for_type::<Parameters<RunReflectionParams>>()
     )]
     async fn run_reflection(&self, raw_params: JsonObject) -> Result<CallToolResult, McpError> {
@@ -578,13 +959,6 @@ enum RuntimeModel {
 }
 
 impl Runtime {
-    async fn bootstrap(config: &AppConfig, dashboard: DashboardObserver) -> Result<Self, AppError> {
-        config.validate().map_err(AppError::Message)?;
-
-        let store = SqliteStore::bootstrap(&config.database_url).await?;
-        Self::from_store(config, store, dashboard).await
-    }
-
     async fn from_store(
         config: &AppConfig,
         store: SqliteStore,
@@ -597,22 +971,12 @@ impl Runtime {
             model: build_runtime_model(config)?,
             dashboard,
         };
-        runtime.ensure_default_identity().await?;
+        runtime.validate_default_identity().await?;
         Ok(runtime)
     }
 
-    async fn ensure_default_identity(&self) -> Result<(), AppError> {
-        match self.store.load_identity().await {
-            Ok(_) => Ok(()),
-            Err(AppError::Message(message)) if message == "missing identity" => {
-                self.store
-                    .save_identity(IdentityCore::new(vec![
-                        "identity:self=agent_llm_mm".to_string(),
-                    ]))
-                    .await
-            }
-            Err(error) => Err(error),
-        }
+    async fn validate_default_identity(&self) -> Result<(), AppError> {
+        self.store.load_identity().await.map(|_| ())
     }
 
     async fn record_tool_operation(&self, record: ToolOperationRecord) {
@@ -825,6 +1189,37 @@ impl EventStore for Runtime {
         self.store.list_event_references().await
     }
 
+    async fn list_event_references_in_scope(
+        &self,
+        scope: &MemoryScope,
+        evidence_manifest: Option<&[EventReference]>,
+    ) -> Result<Vec<String>, AppError> {
+        self.store
+            .list_event_references_in_scope(scope, evidence_manifest)
+            .await
+    }
+
+    async fn list_event_references_for_snapshot(
+        &self,
+        scope: &MemoryScope,
+        evidence_manifest: Option<&[EventReference]>,
+        time_window: &SnapshotTimeWindow,
+    ) -> Result<Vec<String>, AppError> {
+        self.store
+            .list_event_references_for_snapshot(scope, evidence_manifest, time_window)
+            .await
+    }
+
+    async fn list_recorded_at_for_snapshot_manifest(
+        &self,
+        scope: &MemoryScope,
+        evidence_manifest: &[EventReference],
+    ) -> Result<Vec<DateTime<Utc>>, AppError> {
+        self.store
+            .list_recorded_at_for_snapshot_manifest(scope, evidence_manifest)
+            .await
+    }
+
     async fn query_evidence_event_ids(
         &self,
         query: EvidenceQuery,
@@ -845,6 +1240,58 @@ impl EventStore for Runtime {
 }
 
 #[async_trait]
+impl MemoryReadStore for Runtime {
+    async fn query_event_records(
+        &self,
+        query: EventRecordQuery,
+    ) -> Result<Vec<EventReadRecord>, AppError> {
+        self.store.query_event_records(query).await
+    }
+
+    async fn query_claim_records(
+        &self,
+        query: ClaimRecordQuery,
+    ) -> Result<Vec<ClaimReadRecord>, AppError> {
+        self.store.query_claim_records(query).await
+    }
+
+    async fn query_episode_records(
+        &self,
+        query: EpisodeRecordQuery,
+    ) -> Result<Vec<EpisodeReadRecord>, AppError> {
+        self.store.query_episode_records(query).await
+    }
+
+    async fn query_reflection_records(
+        &self,
+        query: ReflectionRecordQuery,
+    ) -> Result<Vec<ReflectionReadRecord>, AppError> {
+        self.store.query_reflection_records(query).await
+    }
+
+    async fn query_scoped_event_ids(
+        &self,
+        query: ScopedEventIdQuery,
+    ) -> Result<std::collections::BTreeSet<String>, AppError> {
+        self.store.query_scoped_event_ids(query).await
+    }
+
+    async fn query_claim_reflection_history(
+        &self,
+        query: ClaimReflectionHistoryQuery,
+    ) -> Result<ClaimReflectionHistoryPage, AppError> {
+        self.store.query_claim_reflection_history(query).await
+    }
+
+    async fn query_self_model_history(
+        &self,
+        query: SelfModelHistoryQuery,
+    ) -> Result<SelfModelHistoryPage, AppError> {
+        self.store.query_self_model_history(query).await
+    }
+}
+
+#[async_trait]
 impl ClaimStore for Runtime {
     async fn upsert_claim(&self, claim: StoredClaim) -> Result<(), AppError> {
         self.store.upsert_claim(claim).await
@@ -856,6 +1303,13 @@ impl ClaimStore for Runtime {
 
     async fn list_active_claims(&self) -> Result<Vec<StoredClaim>, AppError> {
         self.store.list_active_claims().await
+    }
+
+    async fn list_active_claims_in_scope(
+        &self,
+        scope: &MemoryScope,
+    ) -> Result<Vec<StoredClaim>, AppError> {
+        self.store.list_active_claims_in_scope(scope).await
     }
 
     async fn update_claim_status(
@@ -881,6 +1335,33 @@ impl EpisodeStore for Runtime {
 
     async fn list_episode_references(&self) -> Result<Vec<String>, AppError> {
         self.store.list_episode_references().await
+    }
+
+    async fn list_episode_references_supporting_claims(
+        &self,
+        scope: &MemoryScope,
+        claim_ids: &[String],
+    ) -> Result<Vec<String>, AppError> {
+        self.store
+            .list_episode_references_supporting_claims(scope, claim_ids)
+            .await
+    }
+
+    async fn list_episode_references_in_scope(
+        &self,
+        scope: &MemoryScope,
+    ) -> Result<Vec<String>, AppError> {
+        self.store.list_episode_references_in_scope(scope).await
+    }
+
+    async fn list_episode_references_for_snapshot(
+        &self,
+        scope: &MemoryScope,
+        time_window: &SnapshotTimeWindow,
+    ) -> Result<Vec<String>, AppError> {
+        self.store
+            .list_episode_references_for_snapshot(scope, time_window)
+            .await
     }
 }
 

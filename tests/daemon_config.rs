@@ -61,9 +61,9 @@ async fn doctor_reports_observe_only_daemon_diagnostics_without_semantic_writes(
         ..Default::default()
     };
 
-    let _ = agent_llm_mm::run_doctor(config.clone())
+    agent_llm_mm::adapters::sqlite::initialize_database(&database_url)
         .await
-        .expect("initial doctor bootstrap should pass");
+        .expect("explicit database init should pass");
     let before = semantic_counts(&database_url).await;
 
     let report = agent_llm_mm::run_doctor(config)

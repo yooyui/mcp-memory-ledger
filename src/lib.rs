@@ -10,7 +10,7 @@ pub mod ports;
 pub mod support;
 
 use support::{
-    cli::AppCommand,
+    cli::{AppCommand, DoctorMode},
     config::{AppConfig, TransportKind},
     doctor::DoctorReport,
 };
@@ -21,7 +21,8 @@ pub fn startup_transport_from_default_config() -> TransportKind {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub enum RunOutput {
-    Doctor(DoctorReport),
+    Doctor(Box<DoctorReport>),
+    DatabaseLifecycle(Box<adapters::sqlite::DatabaseLifecycleReport>),
 }
 
 pub async fn run_command(command: AppCommand, config: AppConfig) -> Result<Option<RunOutput>> {
@@ -35,9 +36,22 @@ pub async fn run_command(command: AppCommand, config: AppConfig) -> Result<Optio
 
             Ok(None)
         }
-        AppCommand::Doctor => run_doctor(config)
+        AppCommand::Init => adapters::sqlite::initialize_database(&config.database_url)
             .await
-            .map(|report| Some(RunOutput::Doctor(report))),
+            .map(|report| Some(RunOutput::DatabaseLifecycle(Box::new(report))))
+            .map_err(anyhow::Error::from),
+        AppCommand::Migrate => adapters::sqlite::migrate_database(&config.database_url)
+            .await
+            .map(|report| Some(RunOutput::DatabaseLifecycle(Box::new(report))))
+            .map_err(anyhow::Error::from),
+        AppCommand::Doctor(DoctorMode::ReadOnly) => run_doctor(config)
+            .await
+            .map(|report| Some(RunOutput::Doctor(Box::new(report)))),
+        AppCommand::Doctor(DoctorMode::AllowBootstrap) => {
+            support::doctor::run_doctor_allow_bootstrap(config)
+                .await
+                .map(|report| Some(RunOutput::Doctor(Box::new(report))))
+        }
     }
 }
 

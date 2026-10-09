@@ -6,10 +6,16 @@ use anyhow::Result;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    agent_llm_mm::support::tracing::init_tracing();
     let command = command_from_args(std::env::args())?;
+    tracing::debug!(?command, "CLI command selected");
     let config = AppConfig::load().map_err(anyhow::Error::msg)?;
     match run_command(command, config).await? {
         Some(RunOutput::Doctor(report)) => {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            Ok(())
+        }
+        Some(RunOutput::DatabaseLifecycle(report)) => {
             println!("{}", serde_json::to_string_pretty(&report)?);
             Ok(())
         }

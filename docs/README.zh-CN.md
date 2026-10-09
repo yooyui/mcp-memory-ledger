@@ -8,14 +8,23 @@ MCP Memory Ledger 是一个本地优先的 Rust MCP `stdio` 记忆服务。它�
 
 当前项目适合作为本地 Agent 记忆、MCP 集成、SQLite 持久化和受治理自我修订的技术 MVP。它不是生产级自治 Agent 平台，远程团队模式、多租户、安装包发布、daemon 写能力和生产安全边界仍按路线图和门禁分阶段推进。
 
+[正式化改进与主线同步计划](formalization-improvement-plan-2026-08-25.md)集中整理了当前产品、工程、安全、发布和 GitHub 主线差距。它是验收映射，不代表 Local Alpha 或 production-ready 已完成；当前 active plan 仍是唯一任务入口。
+
 ## 核心能力
 
-- **本地 MCP 记忆服务**：通过 `stdio` 暴露 `ingest_interaction`、`build_self_snapshot`、`decide_with_snapshot`、`run_reflection` 4 个 MCP 工具。
+- **本地 MCP 记忆服务**：通过 `stdio` 暴露 `ingest_interaction`、`search_memory`、`get_memory`、`get_reflection_history`、`get_self_model_history`、`get_evidence_relation`、`supersede_memory`、`build_self_snapshot`、`decide_with_snapshot` 和 `run_reflection` 共 10 个工具。
+- **按 scope 检索 Event / Claim / Episode / Reflection**：`search_memory` 要求显式 namespace。省略类型时默认返回有界、recent-first 的 Event；`record_type = Claim / Episode / Reflection` 分别返回 scoped Claim、按同 scope Event 投影的 Episode，以及只通过同 scope Claim 端点归属的 Reflection。record-only Reflection 不可见。additive `record_types` 可请求这四类 tagged record 的 scoped union。确定性读取路径不依赖 provider；mixed-scope Claim revision edge 整边隐藏。
+- **按稳定 ID 查找**：`get_memory(namespace, id, record_type?)` 返回一条完整 Event、Claim、Episode 或 scoped Reflection。省略 `record_type` 保持 Event 语义。Episode / Reflection 把 `id` 当作 opaque exact persisted reference。missing、跨 namespace 与 record-only Reflection 返回 `record: null`，不扩大查询。
+- **Claim 修订历史**：`get_reflection_history(namespace, claim_reference, limit?)` 从一条 exact scoped Claim 出发，按 newest-first 返回双向 revision chain。missing / cross-scope / mixed-scope 路径保持空或隐藏。
+- **identity/commitment 修订审计**：`get_self_model_history(namespace, history_type, limit?)` 读取 claim-attributed reflection 上的 identity 或 commitment 补丁。这是审计轨迹，不是 versioned identity/commitment ledger。
+- **证据关系运行时**：`get_evidence_relation` 把调用方 trigger window 与同 scope Event 做 intersect-only 收窄，并报告 selected / available-not-selected。不引入 ranking 或 widening。
+- **受审计的 scoped supersede**：`supersede_memory` 通过既有 `run_reflection` 事务替换一条同 scope Claim。旧 Claim 保留为 `Superseded`；missing / cross-scope 输入 fail closed。这不是第二条 durable write path。
 - **SQLite 持久化**：保存 event、claim、evidence、reflection audit、trigger ledger 和 operation log。
 - **证据门控自我修订**：claim、identity、commitment 的修订必须经过明确证据和治理规则；`run_reflection` 仍是 identity / commitment / reflection 的唯一持久化写路径。
-- **可观测诊断**：提供只读 dashboard、doctor 预检、operation log 查询和本地支持包生成器。
+- **有界 scoped snapshot**：M0.2 显式路径接受 namespace、可选 evidence manifest 和 inclusive 时间窗；SQLite 做 owner/namespace 收窄与 recent-first 排序。
+- **有界本地运维**：包含 operation-log 查询、backup / restore、脱敏诊断、显式 `init` / `migrate`，以及默认不写库的 `doctor --read-only`。`serve` 拒绝缺失或过期数据库，而不会隐式改库。
+- **运行时与源码门禁**：启用无认证 dashboard 时只允许 localhost/loopback，tracing 固定写 stderr；Rust `1.95.0` 下的 Linux/macOS CI 执行格式、全特性 Clippy、full tests 与状态同步。
 - **Provider 接入**：内置 `mock`、`openai-compatible` 和 OpenRouter 配置路径；provider 密钥只应放在本机私有配置或环境变量中。
-- **本地发布门禁**：包含本地 Alpha、provider 预检、打包预检、发布证据索引等只读检查脚本，用于证明边界而不是自动发布或认证。
 
 ## 适合场景
 
@@ -31,7 +40,8 @@ macOS：
 
 ```zsh
 ./scripts/agent-llm-mm.sh bootstrap-local
-./scripts/agent-llm-mm.sh doctor
+./scripts/agent-llm-mm.sh init
+./scripts/agent-llm-mm.sh doctor --read-only
 ./scripts/agent-llm-mm.sh serve
 ```
 
@@ -39,7 +49,8 @@ Windows：
 
 ```powershell
 pwsh -File .\scripts\agent-llm-mm.ps1 bootstrap-local
-pwsh -File .\scripts\agent-llm-mm.ps1 doctor
+pwsh -File .\scripts\agent-llm-mm.ps1 init
+pwsh -File .\scripts\agent-llm-mm.ps1 doctor --read-only
 pwsh -File .\scripts\agent-llm-mm.ps1 serve
 ```
 
@@ -92,46 +103,73 @@ pwsh -File .\scripts\agent-llm-mm.ps1 serve
 - 最小 identity / commitment 修订
 - 基于 trigger ledger 的自动自我修订 MVP
 - 只读 dashboard、doctor、本地支持包和本地门禁汇总脚本
+- 显式 SQLite schema version / migration ledger、事务迁移、写入前 backup 与 restore rehearsal
+- dashboard loopback 强制边界、stderr-only tracing、固定 Rust `1.95.0` 的 Linux/macOS source CI
+- M1.0.1–M1.0.3 scope / data-integrity 前置门
+- M1.1.1–M1.1.6 scoped Event / Claim / Episode / Reflection search、evidence-relation runtime 与跨类型 union
+- M1.2.1–M1.2.5 Event / Claim / Episode / Reflection lookup 与 Claim reflection history
+- M1.2.6 scoped identity/commitment revision audit（`get_self_model_history`）；不是 versioned ledger
+- M1.2.7 scoped Claim audited supersede（`supersede_memory`）；复用 `run_reflection`，默认不 hard delete
 
 部分实现：
 
-- `decide_with_snapshot` 仍围绕动作字符串协议，不是完整决策引擎
-- episode 目前主要是轻量 projection，不是完整自传式记忆模型
+- M0.2 只对显式 scoped snapshot 收口；省略 `namespace` 的 legacy 调用仍保持 unscoped 兼容，完整面向用户的 recall contract 仍未完成
+- `decide_with_snapshot` 仍围绕动作字符串协议，不是完整决策引擎；允许结果标记为 `experimental_non_authoritative`
+- episode 目前主要是轻量 scope 投影，不是完整自传式记忆模型
+- 运行时读取已覆盖四类 search/lookup、union、Claim history、self-model audit 与 evidence-relation；`supersede_memory` 是 `run_reflection` 的 scoped Claim 纠错门面，不是第二条 durable write path
+- leftover `Owner::Unknown` 行对 schema 仍合法，但对 namespace-derived scoped read 不可见
 - provider live evidence 只证明配置和连通性，不证明模型质量、SLA 或生产可用性
 - 本地 Alpha 门禁仍依赖真实 fresh-machine、Windows parity 和人工 release decision 等外部证据
+- `rmcp` 仍固定为 `0.5.0`；对官方 `2.2.0` 的隔离 spike 因一个 handler error contract 回归而判定本里程碑不直接升级
 
 未实现：
 
 - 完整 memory layering
+- versioned identity/commitment ledger、record-only Reflection history，以及 Event / Episode / Reflection 纠错
+- M1.3.0 current-schema structural readback 与 M1.3.1 真实客户端退出门
 - richer evidence ranking / weighting
 - 生产级 remote / team / multi-tenant 能力
 - daemon 写能力和后台自治运行
 - 安装包、service manager、auto-updater 和发布认证流程
 
-完整实现状态见 [当前实现状态](project-status.md) 和 [路线图](roadmap.md)。
+完整实现状态见 [当前实现状态](project-status.md)、[路线图](roadmap.md) 和 [当前 active plan](plans/2026-07-10-product-replan.md)。下一领取顺序是 `M1.3.0 Current-Schema Structural Readback Gate`。
 
 ## 文档
 
-- [项目定位](positioning.md)
-- [常见问题](faq.md)
-- [英文项目说明](project-overview.en.md)
-- [中文项目说明](project-overview.zh-CN.md)
-- [日文项目说明](project-overview.ja.md)
+### 理解项目
+
+1. [项目起点与主线原则](origin-and-principles.md)
+2. [项目定位](positioning.md)
+3. [当前实现状态](project-status.md)
+4. [Now / Next / Later 路线图](roadmap.md)
+5. [正式化改进与主线同步计划](formalization-improvement-plan-2026-08-25.md)
+6. [当前 active plan](plans/2026-07-10-product-replan.md)
+
+当前 active plan 是唯一任务入口；历史计划只用于追溯，不再定义当前工作。
+
+### 开发与验证
+
+- [macOS 开发说明](development-macos.md)
+- [Windows 开发说明](development-windows.md)
+- [本机 MCP 接入](local-mcp-integration-2026-03-26.md)
 - [测试指南](testing-guide-2026-03-24.md)
-- [发布准备评估](release-readiness.md)
-- [发布门禁运行手册](release-gate.md)
-- [本地 Alpha 产品需求说明](product/prd-local-alpha.md)
-- [Provider 就绪检查清单](provider-contract.md)
+
+### 参考与历史
+
 - [文档总览](document-map.md)
+- [历史归档](archive.md)
 
 ## 验证
 
-截至 `2026-06-08`，`cargo test` 全量通过，共 400 个测试。
+测试分为 `fast`、`core`、`full` 三级；发布证据、打包和 provider certification
+工具由非默认 `release-tools` feature 承载。
 
 常用本地检查：
 
 ```zsh
-cargo test
+./scripts/test-tier.sh fast
+./scripts/test-tier.sh core
+./scripts/status-sync-check.sh
 ./scripts/agent-llm-mm.sh doctor
 git diff --check
 ```

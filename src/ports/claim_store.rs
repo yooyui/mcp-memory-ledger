@@ -1,6 +1,9 @@
 use async_trait::async_trait;
 
-use crate::{domain::claim::ClaimDraft, error::AppError};
+use crate::{
+    domain::{claim::ClaimDraft, types::MemoryScope},
+    error::AppError,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ClaimStatus {
@@ -51,6 +54,24 @@ pub trait ClaimStore {
     async fn upsert_claim(&self, claim: StoredClaim) -> Result<(), AppError>;
     async fn link_evidence(&self, claim_id: String, event_id: String) -> Result<(), AppError>;
     async fn list_active_claims(&self) -> Result<Vec<StoredClaim>, AppError>;
+    async fn list_active_claims_in_scope(
+        &self,
+        scope: &MemoryScope,
+    ) -> Result<Vec<StoredClaim>, AppError> {
+        Ok(self
+            .list_active_claims()
+            .await?
+            .into_iter()
+            .filter(|claim| {
+                scope
+                    .owner()
+                    .is_none_or(|owner| claim.claim.owner() == owner)
+                    && scope
+                        .namespace()
+                        .is_none_or(|namespace| claim.claim.namespace() == namespace)
+            })
+            .collect())
+    }
     async fn update_claim_status(
         &self,
         claim_id: &str,

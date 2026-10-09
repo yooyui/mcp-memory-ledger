@@ -12,18 +12,18 @@ use agent_llm_mm::{
     domain::{
         claim::ClaimDraft,
         commitment::Commitment,
-        event::Event,
+        event::{Event, EventReference, MAX_EVIDENCE_MANIFEST_ITEMS},
         identity_core::IdentityCore,
         reflection::Reflection,
         self_revision::{SelfRevisionProposal, SelfRevisionRequest, TriggerType},
-        snapshot::{SelfSnapshot, SnapshotBudget},
-        types::{EventKind, Mode, Namespace, Owner},
+        snapshot::{SelfSnapshot, SnapshotBudget, SnapshotTimeWindow},
+        types::{EventKind, MemoryScope, Mode, Namespace, Owner},
     },
     error::AppError,
     ports::{
-        ClaimStatus, ClaimStore, Clock, CommitmentStore, EventStore, EvidenceQuery, IdGenerator,
-        IdentityStore, IngestTransaction, IngestTransactionRunner, ModelDecision, ModelInput,
-        ModelPort, ReflectionStore, ReflectionTransaction, ReflectionTransactionRunner,
+        ClaimStatus, ClaimStore, Clock, CommitmentStore, EpisodeStore, EventStore, EvidenceQuery,
+        IdGenerator, IdentityStore, IngestTransaction, IngestTransactionRunner, ModelDecision,
+        ModelInput, ModelPort, ReflectionStore, ReflectionTransaction, ReflectionTransactionRunner,
         StoredClaim, StoredEvent, StoredReflection, StoredTriggerLedgerEntry, TriggerLedgerStatus,
         TriggerLedgerStore,
     },
@@ -647,6 +647,45 @@ async fn reflection_replaces_with_query_and_explicit_evidence_ids_without_duplic
             ),
         ]
     );
+    assert_eq!(
+        deps.reflection("id-1")
+            .expect("reflection audit should be committed")
+            .supporting_evidence_event_ids,
+        vec![
+            "evt-reflection-1".to_string(),
+            "evt-reflection-3".to_string(),
+        ],
+        "the compatibility `*_event_ids` audit field must retain ordered raw ids"
+    );
+}
+
+#[tokio::test]
+async fn reflection_rejects_invalid_explicit_event_reference_forms() {
+    for invalid_event_id in ["", " ", "event:", "event:event:evt-reflection-1"] {
+        let deps = test_support::reflection_query_deps();
+        let result = execute_reflection(
+            &deps,
+            ReflectionInput::new(
+                Reflection::new("Invalid event references must fail before reflection writes."),
+                "claim-old",
+                Some(ClaimDraft::new(
+                    Owner::Self_,
+                    "self.role",
+                    "is",
+                    "principal_architect",
+                    Mode::Observed,
+                )),
+                vec![invalid_event_id.to_string()],
+            ),
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(AppError::InvalidParams(_))),
+            "invalid event reference {invalid_event_id:?} should be rejected"
+        );
+        assert!(deps.reflection("id-1").is_none());
+    }
 }
 
 #[tokio::test]
@@ -736,6 +775,9 @@ async fn build_self_snapshot_returns_store_backed_snapshot_and_respects_budget()
     let result = execute_build_snapshot(
         &deps,
         BuildSelfSnapshotInput {
+            scope: MemoryScope::self_(),
+            evidence_manifest: None,
+            time_window: SnapshotTimeWindow::unbounded(),
             budget: SnapshotBudget::new(2),
         },
     )
@@ -756,11 +798,194 @@ async fn build_self_snapshot_returns_store_backed_snapshot_and_respects_budget()
     );
     assert_eq!(
         result.snapshot.evidence,
-        vec!["event:evt-1".to_string(), "event:evt-2".to_string()]
+        vec!["event:evt-3".to_string(), "event:evt-2".to_string()]
     );
     assert_eq!(
         result.snapshot.episodes,
-        vec!["episode:task-4".to_string(), "episode:memory".to_string()]
+        vec!["episode:memory".to_string(), "episode:task-4".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn build_self_snapshot_rejects_manifest_on_legacy_unscoped_application_input() {
+    let deps = test_support::snapshot_deps();
+
+    let error = execute_build_snapshot(
+        &deps,
+        BuildSelfSnapshotInput {
+            scope: MemoryScope::legacy_unscoped(),
+            evidence_manifest: Some(vec![EventReference::parse("evt-1").unwrap()]),
+            time_window: SnapshotTimeWindow::unbounded(),
+            budget: SnapshotBudget::new(2),
+        },
+    )
+    .await
+    .expect_err("application callers must not bypass the scoped manifest invariant");
+
+    assert!(
+        error
+            .to_string()
+            .contains("evidence_manifest requires an explicit namespace")
+    );
+}
+
+#[tokio::test]
+async fn build_self_snapshot_rejects_oversized_programmatic_manifest() {
+    let deps = test_support::snapshot_deps();
+    let reference = EventReference::parse("evt-1").unwrap();
+
+    let error = execute_build_snapshot(
+        &deps,
+        BuildSelfSnapshotInput {
+            scope: MemoryScope::self_(),
+            evidence_manifest: Some(vec![reference; MAX_EVIDENCE_MANIFEST_ITEMS + 1]),
+            time_window: SnapshotTimeWindow::unbounded(),
+            budget: SnapshotBudget::new(2),
+        },
+    )
+    .await
+    .expect_err("programmatic callers must not bypass the manifest size bound");
+
+    assert!(
+        error
+            .to_string()
+            .contains("evidence_manifest must contain at most 256 entries")
+    );
+}
+
+#[tokio::test]
+async fn build_self_snapshot_rejects_invalid_or_unscoped_programmatic_time_window() {
+    let deps = test_support::snapshot_deps();
+    let now = test_support::fixed_now();
+
+    let reversed = execute_build_snapshot(
+        &deps,
+        BuildSelfSnapshotInput {
+            scope: MemoryScope::self_(),
+            evidence_manifest: None,
+            time_window: SnapshotTimeWindow {
+                recorded_after: Some(now + chrono::Duration::seconds(1)),
+                recorded_before: Some(now),
+            },
+            budget: SnapshotBudget::new(2),
+        },
+    )
+    .await
+    .expect_err("application callers must not bypass time-window ordering validation");
+    assert!(reversed.to_string().contains("less than or equal"));
+
+    let unscoped = execute_build_snapshot(
+        &deps,
+        BuildSelfSnapshotInput {
+            scope: MemoryScope::legacy_unscoped(),
+            evidence_manifest: None,
+            time_window: SnapshotTimeWindow::new(Some(now), None).unwrap(),
+            budget: SnapshotBudget::new(2),
+        },
+    )
+    .await
+    .expect_err("time-bounded snapshots must fail closed without an explicit namespace");
+    assert!(unscoped.to_string().contains("explicit namespace"));
+}
+
+#[test]
+fn revision_window_snapshot_input_remains_time_unbounded() {
+    assert!(
+        BuildSelfSnapshotInput::for_revision_window(4)
+            .time_window
+            .is_unbounded()
+    );
+}
+
+#[tokio::test]
+async fn build_self_snapshot_keeps_empty_time_window_intersection_empty() {
+    let deps = test_support::snapshot_deps();
+    let result = execute_build_snapshot(
+        &deps,
+        BuildSelfSnapshotInput {
+            scope: MemoryScope::self_(),
+            evidence_manifest: None,
+            time_window: SnapshotTimeWindow::new(
+                Some(test_support::fixed_now() + chrono::Duration::seconds(1)),
+                None,
+            )
+            .unwrap(),
+            budget: SnapshotBudget::new(2),
+        },
+    )
+    .await
+    .expect("an explicit narrowing window may produce an empty snapshot intersection");
+
+    assert!(result.snapshot.evidence.is_empty());
+    assert!(result.snapshot.episodes.is_empty());
+}
+
+struct LegacyEpisodeStore;
+
+#[async_trait]
+impl EpisodeStore for LegacyEpisodeStore {
+    async fn record_event_in_episode(
+        &self,
+        _episode_reference: String,
+        _event_id: String,
+    ) -> Result<(), AppError> {
+        Ok(())
+    }
+
+    async fn list_episode_references(&self) -> Result<Vec<String>, AppError> {
+        Ok(vec!["episode:legacy".to_string()])
+    }
+}
+
+#[tokio::test]
+async fn episode_store_default_preserves_legacy_calls_and_fails_closed_for_scoped_calls() {
+    let store = LegacyEpisodeStore;
+
+    assert_eq!(
+        store
+            .list_episode_references_in_scope(&MemoryScope::legacy_unscoped())
+            .await
+            .unwrap(),
+        vec!["episode:legacy"]
+    );
+    let error = store
+        .list_episode_references_in_scope(&MemoryScope::self_())
+        .await
+        .expect_err("legacy stores must not return unscoped episodes for a scoped request");
+    assert!(
+        error
+            .to_string()
+            .contains("scoped episode lookup is not supported by this store")
+    );
+
+    let error = store
+        .list_episode_references_for_snapshot(
+            &MemoryScope::self_(),
+            &SnapshotTimeWindow::new(Some(test_support::fixed_now()), None).unwrap(),
+        )
+        .await
+        .expect_err("legacy stores must not silently ignore snapshot time bounds");
+    assert!(error.to_string().contains("time-bounded episode lookup"));
+
+    let error = store
+        .list_episode_references_supporting_claims(
+            &MemoryScope::legacy_unscoped(),
+            &["claim-legacy".to_string()],
+        )
+        .await
+        .expect_err("unscoped identity support lookup must fail closed");
+    assert!(error.to_string().contains("requires an explicit namespace"));
+    let error = store
+        .list_episode_references_supporting_claims(
+            &MemoryScope::self_(),
+            &["claim-legacy".to_string()],
+        )
+        .await
+        .expect_err("legacy stores must not invent claim-to-episode provenance");
+    assert!(
+        error
+            .to_string()
+            .contains("claim-to-evidence-to-episode lookup is not supported")
     );
 }
 
@@ -857,17 +1082,17 @@ mod test_support {
             StoredEvent::new(
                 "evt-1".to_string(),
                 fixed_now(),
-                Event::new(Owner::User, EventKind::Observation, "evt-1"),
+                Event::new(Owner::Self_, EventKind::Observation, "evt-1"),
             ),
             StoredEvent::new(
                 "evt-2".to_string(),
                 fixed_now(),
-                Event::new(Owner::User, EventKind::Observation, "evt-2"),
+                Event::new(Owner::Self_, EventKind::Observation, "evt-2"),
             ),
             StoredEvent::new(
                 "evt-3".to_string(),
                 fixed_now(),
-                Event::new(Owner::User, EventKind::Observation, "evt-3"),
+                Event::new(Owner::Self_, EventKind::Observation, "evt-3"),
             ),
         ];
         state.committed.episodes = vec![
@@ -1056,7 +1281,11 @@ mod test_support {
                 "principal_architect",
                 Mode::Inferred,
             )),
-            vec!["evt-reflection-1".to_string()],
+            vec![
+                "event:evt-reflection-1".to_string(),
+                "evt-reflection-1".to_string(),
+                "event:evt-reflection-1".to_string(),
+            ],
         )
         .with_replacement_evidence_query(agent_llm_mm::ports::event_store::EvidenceQuery {
             namespace: None,
@@ -1227,7 +1456,7 @@ mod test_support {
         }
     }
 
-    fn fixed_now() -> DateTime<Utc> {
+    pub fn fixed_now() -> DateTime<Utc> {
         chrono::DateTime::parse_from_rfc3339("2026-03-23T10:00:00Z")
             .unwrap()
             .with_timezone(&Utc)
@@ -1415,7 +1644,13 @@ impl InMemoryDeps {
                     ))
                     .unwrap()
                     .with_timezone(&Utc),
-                    Event::new(Owner::Self_, EventKind::Action, summary),
+                    Event::new_with_namespace(
+                        Owner::World,
+                        Namespace::for_project("agent-llm-mm"),
+                        EventKind::Action,
+                        summary,
+                    )
+                    .unwrap(),
                 )
             })
             .collect();
@@ -1464,6 +1699,31 @@ impl EventStore for InMemoryDeps {
             .collect())
     }
 
+    async fn list_recorded_at_for_snapshot_manifest(
+        &self,
+        scope: &MemoryScope,
+        evidence_manifest: &[EventReference],
+    ) -> Result<Vec<DateTime<Utc>>, AppError> {
+        let state = self.state.lock().unwrap();
+        Ok(state
+            .committed
+            .events
+            .iter()
+            .filter(|event| {
+                scope
+                    .owner()
+                    .is_none_or(|owner| event.event.owner() == owner)
+                    && scope
+                        .namespace()
+                        .is_none_or(|namespace| event.event.namespace() == namespace)
+                    && evidence_manifest
+                        .iter()
+                        .any(|reference| reference.event_id() == event.event_id)
+            })
+            .map(|event| event.recorded_at)
+            .collect())
+    }
+
     async fn has_event(&self, event_id: &str) -> Result<bool, AppError> {
         Ok(self
             .state
@@ -1491,7 +1751,14 @@ impl EventStore for InMemoryDeps {
         }
 
         let mut events = self.state.lock().unwrap().committed.events.clone();
-        filter_and_order_events(&mut events, query.namespace, query.owner, query.kind);
+        filter_and_order_events(
+            &mut events,
+            query.namespace,
+            query.owner,
+            query.kind,
+            query.recorded_after,
+            query.recorded_before,
+        );
 
         let limit = query.limit.unwrap_or(10);
         Ok(events
@@ -1512,7 +1779,14 @@ impl EventStore for InMemoryDeps {
         }
 
         let mut events = self.state.lock().unwrap().committed.events.clone();
-        filter_and_order_events(&mut events, query.namespace, query.owner, query.kind);
+        filter_and_order_events(
+            &mut events,
+            query.namespace,
+            query.owner,
+            query.kind,
+            query.recorded_after,
+            query.recorded_before,
+        );
 
         let events = if let Some(limit) = query.limit {
             events.into_iter().take(limit).collect()
@@ -1529,6 +1803,8 @@ fn filter_and_order_events(
     namespace: Option<Namespace>,
     owner: Option<Owner>,
     kind: Option<EventKind>,
+    recorded_after: Option<DateTime<Utc>>,
+    recorded_before: Option<DateTime<Utc>>,
 ) {
     if let Some(namespace) = namespace {
         events.retain(|event| event.event.namespace() == &namespace);
@@ -1540,6 +1816,14 @@ fn filter_and_order_events(
 
     if let Some(kind) = kind {
         events.retain(|event| event.event.kind() == kind);
+    }
+
+    if let Some(recorded_after) = recorded_after {
+        events.retain(|event| event.recorded_at >= recorded_after);
+    }
+
+    if let Some(recorded_before) = recorded_before {
+        events.retain(|event| event.recorded_at <= recorded_before);
     }
 
     events.sort_by(|lhs, rhs| {
@@ -1646,6 +1930,92 @@ impl agent_llm_mm::ports::EpisodeStore for InMemoryDeps {
             .episodes
             .iter()
             .map(|(episode_reference, _)| episode_reference.clone())
+            .collect())
+    }
+
+    async fn list_episode_references_in_scope(
+        &self,
+        scope: &MemoryScope,
+    ) -> Result<Vec<String>, AppError> {
+        let state = self.state.lock().unwrap();
+        let mut references = Vec::new();
+        for (episode_reference, event_id) in &state.committed.episodes {
+            let in_scope = state.committed.events.iter().any(|event| {
+                &event.event_id == event_id
+                    && scope
+                        .owner()
+                        .is_none_or(|owner| event.event.owner() == owner)
+                    && scope
+                        .namespace()
+                        .is_none_or(|namespace| event.event.namespace() == namespace)
+            });
+            if in_scope && !references.contains(episode_reference) {
+                references.push(episode_reference.clone());
+            }
+        }
+        Ok(references)
+    }
+
+    async fn list_episode_references_for_snapshot(
+        &self,
+        scope: &MemoryScope,
+        time_window: &SnapshotTimeWindow,
+    ) -> Result<Vec<String>, AppError> {
+        time_window.validate().map_err(AppError::from)?;
+        let state = self.state.lock().unwrap();
+        let mut latest_by_episode = Vec::<(String, DateTime<Utc>, String)>::new();
+
+        for (episode_reference, event_id) in &state.committed.episodes {
+            let Some(event) = state
+                .committed
+                .events
+                .iter()
+                .find(|event| &event.event_id == event_id)
+            else {
+                continue;
+            };
+            let is_eligible = scope
+                .owner()
+                .is_none_or(|owner| event.event.owner() == owner)
+                && scope
+                    .namespace()
+                    .is_none_or(|namespace| event.event.namespace() == namespace)
+                && time_window
+                    .recorded_after
+                    .is_none_or(|after| event.recorded_at >= after)
+                && time_window
+                    .recorded_before
+                    .is_none_or(|before| event.recorded_at <= before);
+            if !is_eligible {
+                continue;
+            }
+
+            let candidate = (
+                episode_reference.clone(),
+                event.recorded_at,
+                event.event_id.clone(),
+            );
+            if let Some(current) = latest_by_episode
+                .iter_mut()
+                .find(|current| current.0 == *episode_reference)
+            {
+                if (candidate.1, candidate.2.as_str()) > (current.1, current.2.as_str()) {
+                    *current = candidate;
+                }
+            } else {
+                latest_by_episode.push(candidate);
+            }
+        }
+
+        latest_by_episode.sort_by(|lhs, rhs| {
+            rhs.1
+                .cmp(&lhs.1)
+                .then_with(|| rhs.2.cmp(&lhs.2))
+                .then_with(|| lhs.0.cmp(&rhs.0))
+        });
+        Ok(latest_by_episode
+            .into_iter()
+            .map(|(episode_reference, _, _)| episode_reference)
             .collect())
     }
 }

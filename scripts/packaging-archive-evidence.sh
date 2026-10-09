@@ -39,6 +39,6 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 project_root="$(cd "${script_dir}/.." && pwd -P)"
 cd "${project_root}"
 
-cargo run --quiet --bin packaging_archive_evidence -- \
+cargo run --quiet --features release-tools --bin packaging_archive_evidence -- \
   --release-candidate "${release_candidate}" \
   --evidence-root "${evidence_root}"

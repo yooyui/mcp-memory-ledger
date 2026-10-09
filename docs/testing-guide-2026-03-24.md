@@ -1,4 +1,4 @@
-# Self-Agent MCP 测试指南（2026-03-24，按 2026-06-08 fresh 验证更新）
+# Self-Agent MCP 测试指南（2026-03-24，按 2026-07-15 fresh 验证更新）
 
 ## 1. 目标
 
@@ -20,50 +20,40 @@
 
 命令执行环境要求：
 
-- 安装 Rust toolchain
+- 安装 `rustup`；仓库固定 Rust `1.95.0` 与 `rustfmt` / `clippy`
 - `cargo` 可用
 - `bash` 或 `zsh`（用于 `scripts/agent-llm-mm.sh`）
 
 ---
 
-## 2. 当前测试基线
+## 2. 当前测试分层
 
-截至 `2026-06-08`，`cargo test -- --list --format terse` 当前枚举测试摘要如下：
+测试数量不再作为文档状态源。固定入口按反馈成本分为三级：
 
-- `lib unit tests`: 9 passed
-- `application_use_cases`: 25 passed
-- `bootstrap`: 24 passed
-- `daemon_config`: 12 passed
-- `dashboard_config`: 4 passed
-- `dashboard_http`: 7 passed
-- `dashboard_projection`: 2 passed
-- `dashboard_recorder`: 2 passed
-- `decision_flow`: 2 passed
-- `demo_openai_compatible_stub`: 1 passed
-- `domain_invariants`: 4 passed
-- `domain_snapshot`: 6 passed
-- `evidence_query_dto`: 4 passed
-- `failure_modes`: 36 passed
-- `first_run_bootstrap_smoke`: 4 passed
-- `local_alpha_external_evidence`: 7 passed
-- `local_alpha_release_evidence`: 20 passed
-- `mcp_stdio`: 46 passed
-- `non_mvp_product_tracks`: 8 passed
-- `openai_compatible_model`: 11 passed
-- `operation_log`: 9 passed
-- `packaging_archive`: 7 passed
-- `product_completion_read_models`: 15 passed
-- `product_readiness`: 15 passed
-- `provider_config`: 18 passed
-- `provider_live_certification`: 12 passed
-- `release_decision`: 5 passed
-- `self_revision_demo_runner`: 2 passed
-- `sqlite_backup_restore`: 6 passed
-- `sqlite_store`: 23 passed
-- `status_sync`: 11 passed
-- `support_bundle`: 35 passed
+| 层级 | 命令 | 使用场景 | feature 边界 |
+| --- | --- | --- | --- |
+| `fast` | `./scripts/test-tier.sh fast` | 日常逻辑修改后的短反馈 | 只跑 lib 与 decision/domain/evidence 核心契约 |
+| `core` | `./scripts/test-tier.sh core` | 默认运行时、SQLite、MCP、dashboard、doctor、support bundle 回归 | 默认 features，不编译发布工具链 |
+| `full` | `./scripts/test-tier.sh full` | 发布工具变更、合并前或 release gate | 等价于 `cargo test --all-features`，包含 `release-tools` |
 
-合计：400 个测试通过。
+`release-tools` 包含 Local Alpha evidence、release decision、product readiness、
+provider certification 和 packaging 相关模块、二进制与测试；这些资产没有删除，
+只是退出默认开发循环。测试文件增长时不再把精确总数复制到 README / 状态文档。
+
+所有 13 个 bin target 都没有内部单元测试，因此关闭了 Cargo 的空 bin test harness；
+需要真实进程的 E2E 仍通过 `CARGO_BIN_EXE_*` 启动实际二进制并保留在对应集成测试中。
+
+静态检查同样分层：日常使用
+`cargo clippy --all-targets -- -D warnings`；涉及 `release-tools` 或最终全功能验证时
+使用 `cargo clippy --all-targets --all-features -- -D warnings`。
+
+`./scripts/status-sync-check.sh` 只读取 active plan 与 reality gates，不编译整套测试；
+它要求至少存在一项完成态 checkbox，并在缺少匹配 reality row 或对应状态未完成时失败，
+避免零项解析被误报为同步成功。
+
+`.github/workflows/ci.yml` 在 `ubuntu-latest` 与 `macos-latest` 上执行同一组
+format、all-feature Clippy、`full` 与 status-sync 门禁。`tests/ci_contract.rs`
+阻止平台或命令清单被静默削弱；Windows 仍是 M2 独立 runtime parity gate。
 
 ---
 
@@ -71,7 +61,7 @@
 
 ### 3.1 环境要求
 
-- 安装 Rust toolchain
+- 安装 `rustup`，并允许仓库选择 `rust-toolchain.toml` 中的 Rust `1.95.0`
 - 可用的 `cargo`
 - `bash` 或 `zsh`：用于 `scripts/agent-llm-mm.sh`
 
@@ -95,7 +85,18 @@ cp examples/agent-llm-mm.example.toml agent-llm-mm.local.toml
 - `provider`
 - provider-specific 配置
 
-如果只是跑现有自动化测试，不需要手工设置；测试本身已经为大多数场景隔离了数据库。若运行环境不能写入默认用户数据目录（例如受限沙箱或只读 home 目录），`doctor` 相关测试和命令会因为默认 SQLite 路径不可写而失败；此时应通过 `AGENT_LLM_MM_DATABASE_URL` 或本地 TOML 指向一个可写的 SQLite 文件。正式接入、手工测试和实验验证仍建议各自使用不同数据库文件。
+如果只是跑现有自动化测试，不需要手工设置；测试本身已经隔离数据库。`doctor` 默认只读，对 missing / old / read-only 路径只报告 `database_lifecycle`，不会因无法写入而 bootstrap。需要建立或升级测试库时，必须显式运行 `init` 或 `migrate`。正式接入、手工测试和实验验证仍应使用不同数据库文件。
+
+`bootstrap` 的默认启动回归会先显式初始化临时数据库，再以独立环境和管道
+`stdin` / `stdout` 启动无子命令的真实二进制，完成 MCP `initialize` 与
+`tools/list` 往返。它不依赖测试运行器的 stdin、用户默认库或本地配置；响应等待
+有超时，失败时也会回收子进程。`serve` 仍不隐式创建或迁移数据库；缺失数据库的拒绝路径
+由 `sqlite_lifecycle` 覆盖。定向验证可运行：
+
+```bash
+cargo test --test bootstrap default_command_serves_stdio_after_explicit_database_init -- --exact
+cargo test --test bootstrap --test sqlite_lifecycle --test mcp_stdio
+```
 
 ---
 
@@ -103,30 +104,34 @@ cp examples/agent-llm-mm.example.toml agent-llm-mm.local.toml
 
 建议按下面顺序执行：
 
-1. `cargo fmt --check`
+1. `cargo fmt --all -- --check`
 2. `git diff --check`
-3. `cargo clippy --all-targets --all-features -- -D warnings`
-4. `cargo test`
-5. `AGENT_LLM_MM_DATABASE_URL=sqlite:///private/tmp/agent-llm-mm-doctor.sqlite ./scripts/agent-llm-mm.sh doctor`
-6. `AGENT_LLM_MM_DATABASE_URL=sqlite:///private/tmp/agent-llm-mm-doctor-cargo.sqlite cargo run --quiet --bin agent_llm_mm -- doctor`
-7. 如果改动涉及 automatic self-revision MVP，再补跑本指南里的 runtime coverage / diagnostics / evidence policy 定向验证
-8. 如果改动涉及 demo package，先用 timestamped / scratch output 跑 `./scripts/run-self-revision-demo.sh target/reports/self-revision-demo/manual-$(date +%Y%m%d-%H%M%S)`；如果要按 Local Alpha 发布口径复核 `latest` 证据链，使用下一条 product smoke
-9. 如果改动涉及 Local Alpha product smoke gate、启动包装脚本或本地产品化证据链，在 repo root 补跑 `./scripts/product-smoke-local.sh [config_path]`；如果当前目录不是 repo root，使用 `/path/to/agent-llm-mm/scripts/product-smoke-local.sh`，并在需要配置文件时传入绝对 config path
-10. 如果改动涉及 bootstrap wrapper，确认脚本契约仍是 `[serve|doctor|bootstrap-local] [config_path]`，unsupported mode 返回 exit code `2`，`bootstrap-local` 不覆盖已有配置、不生成 secret、不运行 `doctor` 或 `serve`，相对目标路径按仓库根目录解析，输出的下一步命令能处理含空格路径，并补跑 `cargo test --test bootstrap -v`
-11. 如果改动涉及 first-run bootstrap smoke、本地首启证据或 `bootstrap-local -> doctor` 产品化路径，补跑 `bash -n scripts/first-run-bootstrap-smoke-local.sh` 和 `cargo test --test first_run_bootstrap_smoke -v`
-12. 如果改动涉及 Local Alpha evidence summary、发布证据汇总或 gate status 输出，补跑 `bash -n scripts/local-alpha-evidence-summary.sh`、`cargo test --test local_alpha_release_evidence -v`，并用 `cargo run --quiet --bin local_alpha_evidence_summary -- --evidence-root .` spot-check JSON 输出；该 summary 只是本地只读 gate 状态汇总，不是自动认证
-13. 如果改动涉及 Local Alpha release-gate refresh 或本机 gate 证据刷新流程，补跑 `bash -n scripts/local-alpha-release-gate-refresh.sh`、`cargo test --test local_alpha_release_evidence -v`，并按需执行 `./scripts/local-alpha-release-gate-refresh.sh [config_path]`；该 refresh 只产生本机可复现证据，不生成真实 fresh-machine、Windows runner、remote/team 或发布决策证据
-14. 如果改动涉及 release engineering、release evidence directory、soak evidence 或候选发布说明，补跑 `bash -n scripts/release-soak-local.sh`、`cargo test --test local_alpha_release_evidence release_soak -v`，并按需执行 `./scripts/release-soak-local.sh <candidate-name> [config_path]`；该 soak 只生成本地 release evidence，不生成真实 fresh-machine、Windows runner、remote/team、上传、tag、安装包或发布认证证据
-15. 如果改动涉及 SQLite 备份、恢复、schema migration 前置检查或 data lifecycle gate，补跑以下命令：
+3. `./scripts/test-tier.sh fast`
+4. `cargo clippy --all-targets -- -D warnings`
+5. `./scripts/test-tier.sh core`
+6. `./scripts/status-sync-check.sh`
+7. 对 scratch path 运行 `init`，再运行 `doctor --read-only`，确认 lifecycle status 为 current
+8. `cargo test --test sqlite_lifecycle -v`
+9. 涉及发布工具链或最终 full gate 时，再运行 `cargo clippy --all-targets --all-features -- -D warnings` 和 `./scripts/test-tier.sh full`
+10. 如果改动涉及 automatic self-revision MVP，再补跑本指南里的 runtime coverage / diagnostics / evidence policy 定向验证
+11. 如果改动涉及 demo package，先用 timestamped / scratch output 跑 `./scripts/run-self-revision-demo.sh target/reports/self-revision-demo/manual-$(date +%Y%m%d-%H%M%S)`；如果要按 Local Alpha 发布口径复核 `latest` 证据链，使用下一条 product smoke
+12. 如果改动涉及 Local Alpha product smoke gate、启动包装脚本或本地产品化证据链，在 repo root 补跑 `./scripts/product-smoke-local.sh [config_path]`；如果当前目录不是 repo root，使用 `/path/to/agent-llm-mm/scripts/product-smoke-local.sh`，并在需要配置文件时传入绝对 config path
+13. 如果改动涉及 wrapper，确认模式仍为 `serve|init|migrate|doctor|bootstrap-local`，doctor 只接受 `--read-only|--allow-bootstrap`，unsupported mode 返回 exit code `2`，并补跑 `cargo test --test bootstrap -v`
+14. 如果改动涉及 first-run bootstrap smoke 或 `bootstrap-local -> init -> doctor --read-only` 路径，补跑 `bash -n scripts/first-run-bootstrap-smoke-local.sh` 和 `cargo test --test first_run_bootstrap_smoke -v`
+15. 如果改动涉及 Local Alpha evidence summary、发布证据汇总或 gate status 输出，补跑 `bash -n scripts/local-alpha-evidence-summary.sh`、`cargo test --features release-tools --test local_alpha_release_evidence -v`，并用 `cargo run --quiet --features release-tools --bin local_alpha_evidence_summary -- --evidence-root .` spot-check JSON 输出；该 summary 只是本地只读 gate 状态汇总，不是自动认证
+16. 如果改动涉及 Local Alpha release-gate refresh 或本机 gate 证据刷新流程，补跑 `bash -n scripts/local-alpha-release-gate-refresh.sh`、`cargo test --features release-tools --test local_alpha_release_evidence -v`，并按需执行 `./scripts/local-alpha-release-gate-refresh.sh [config_path]`；该 refresh 只产生本机可复现证据，不生成真实 fresh-machine、Windows runner、remote/team 或发布决策证据
+17. 如果改动涉及 release engineering、release evidence directory、soak evidence 或候选发布说明，补跑 `bash -n scripts/release-soak-local.sh`、`cargo test --features release-tools --test local_alpha_release_evidence release_soak -v`，并按需执行 `./scripts/release-soak-local.sh <candidate-name> [config_path]`；该 soak 只生成本地 release evidence，不生成真实 fresh-machine、Windows runner、remote/team、上传、tag、安装包或发布认证证据
+18. 如果改动涉及 SQLite 备份、恢复、schema migration 前置检查或 data lifecycle gate，补跑以下命令：
     ```bash
     bash -n scripts/backup-sqlite.sh
     bash -n scripts/restore-sqlite.sh
     cargo test --test sqlite_backup_restore -v
+    cargo test --test sqlite_lifecycle -v
     ```
-16. 如果改动涉及 product readiness、release decision artifact、产品措辞 gate、remote/team inventory/security gates、evidence relation、episode projection、layered memory projection 或 `doctor.system_layer_report`，补跑 `cargo test --test product_readiness -v`、`cargo test --test release_decision -v`、`cargo test --test product_completion_read_models -v`、`cargo test --test provider_config -v` 和 `./scripts/product-readiness-check.sh <candidate-name>` 的本地预检；这些检查只能核验本地门禁、doctor 只读架构层报告、runtime / declared-test-contract dependency-rule evidence、physics-informed non-claim / wording guard 和只读投影，不生成真实 fresh-machine、Windows runner、remote/team 产品模式、GA 或发布认证证据
-17. 如果改动涉及 release evidence index、provider certification preflight、packaging preflight 或 richer memory semantics projection，补跑以下命令，并按需执行对应脚本：
+19. 如果改动涉及 product readiness、release decision artifact、产品措辞 gate、remote/team inventory/security gates、evidence relation、episode projection、layered memory projection 或 `doctor.system_layer_report`，补跑 `cargo test --features release-tools --test product_readiness -v`、`cargo test --features release-tools --test release_decision -v`、`cargo test --test product_completion_read_models -v`、`cargo test --test provider_config -v` 和 `./scripts/product-readiness-check.sh <candidate-name>` 的本地预检；这些检查只能核验本地门禁、doctor 只读架构层报告、runtime / declared-test-contract dependency-rule evidence、physics-informed non-claim / wording guard 和只读投影，不生成真实 fresh-machine、Windows runner、remote/team 产品模式、GA 或发布认证证据
+20. 如果改动涉及 release evidence index、provider certification preflight 或 packaging preflight，补跑以下命令，并按需执行对应脚本：
     ```bash
-    cargo test --test non_mvp_product_tracks -v
+    cargo test --features release-tools --test non_mvp_product_tracks -v
     bash -n scripts/release-evidence-index.sh
     bash -n scripts/provider-certification-check.sh
     bash -n scripts/packaging-preflight-check.sh
@@ -174,10 +179,10 @@ cargo clippy --all-targets --all-features -- -D warnings
 - 命令退出码为 `0`
 - 没有 warning
 
-### 5.4 全量测试
+### 5.4 全功能测试
 
 ```zsh
-cargo test
+./scripts/test-tier.sh full
 ```
 
 重点覆盖：
@@ -188,6 +193,7 @@ cargo test
 - MCP `stdio` E2E
 - failure modes
 - 启动与配置基线
+- release evidence、provider certification 与 packaging 工具
 
 通过标准：
 
@@ -312,6 +318,310 @@ cargo test --test mcp_stdio
 - 修改了 `src/interfaces/mcp/dto.rs`
 - 修改了 `src/interfaces/mcp/server.rs`
 - 修改了应用层输入校验或错误映射
+
+#### 6.3.1 M0.2 scoped snapshot 最小回归
+
+```zsh
+cargo test --test evidence_query_dto snapshot_dto_ -v
+cargo test --test sqlite_store sqlite_snapshot_queries_do_not_leak_across_owner_or_namespace -v
+cargo test --test application_use_cases build_self_snapshot_returns_store_backed_snapshot_and_respects_budget -v
+```
+
+这组回归验证：MCP DTO 只接受 namespace 并由 server-side conversion 推导 owner；省略 namespace 仍保持 legacy unscoped 兼容；显式 scope 会贯穿 application/query port/SQLite，并覆盖 self、world、两个 project 与两个 user namespace，确保 claims、event references 和 episode references 的跨 scope 注入为 0。它不单独证明 evidence manifest、time window / stable order、统一 event ID 或 scoped auto-reflection；manifest 与时间窗边界由后续专用回归覆盖。
+
+#### 6.3.2 M0.2 evidence manifest no-widening 回归
+
+```zsh
+cargo test --test domain_snapshot event_reference -v
+cargo test --test domain_snapshot raw_and_prefixed_event_ids_share_one_canonical_reference -v
+cargo test --test domain_invariants namespace_and_memory_scope_deserialization_preserve_scope_invariants -v
+cargo test --test evidence_query_dto snapshot_dto_ -v
+cargo test --test sqlite_store sqlite_snapshot_manifest_intersects_scope_without_widening -v
+cargo test --test mcp_stdio stdio_tools_share_runtime_state_across_calls -v
+cargo test --test mcp_stdio mcp_tool_calls_append_operation_logs_with_correlation_id_and_snapshot_scope -v
+```
+
+这组回归验证：`MemoryScope` 反序列化拒绝 partial / mismatched 状态；显式 manifest（包括空数组）必须同时显式提供 `namespace`，DTO、application 与 store 都不能进入 legacy unscoped 兼容路径；manifest 最多 256 项，边界值可接受、超限会在 SQLite bind 构造前以 invalid params 拒绝，重复项使用保序线性去重；裸 event ID 与 `event:<id>` 等价并输出 canonical reference；空白、空 ID、重复前缀等非法项会被拒绝；SQLite 使用 `owner + namespace + event_id IN (...)` 做交集查询；越 scope ID 被排除，显式空 manifest 和空交集均返回空 evidence 且不回退到全 scope；tool operation log 记录 snapshot namespace。非法 manifest / time filter 在 optional auto-reflection 前被拒绝的跨过滤器顺序、时间窗与稳定排序由下一节证明；本节也不证明 snapshot 外的全仓 ID 统一或 scoped auto-reflection。
+
+#### 6.3.3 M0.2 snapshot time-window / stable-order 回归
+
+```zsh
+cargo test --test domain_snapshot snapshot_time_window_accepts_equal_boundaries_and_rejects_reversed_bounds -v
+cargo test --test evidence_query_dto snapshot_dto_ -v
+cargo test --test application_use_cases build_self_snapshot_ -v
+cargo test --test sqlite_store sqlite_snapshot_time_window_intersects_scope_manifest_and_orders_real_instants -v
+cargo test --test sqlite_store sqlite_snapshot_preserves_submillisecond_time_window_precision -v
+cargo test --test sqlite_store sqlite_snapshot_orders_episodes_by_latest_in_window_event_tuple -v
+cargo test --test mcp_stdio server_preserves_tool_input_schemas_over_stdio -v
+cargo test --test mcp_stdio invalid_snapshot_filters_are_rejected_before_auto_reflection_side_effects -v
+cargo test --test failure_modes auto_reflection_scopes_trigger_window_to_input_namespace -v
+```
+
+这组回归验证：`recorded_after` / `recorded_before` 是 additive optional MCP 字段，但任一边界都要求显式 `namespace`；RFC3339 会归一为 UTC，闭区间两端相等可用，倒置窗口由 DTO 与 application 拒绝，并在 optional auto-reflection 前停止；显式窗口查无结果时保持空 evidence / episodes，不会回退扩大查询。SQLite 在同一路径上取 scope ∩ manifest（如有）∩ time window，把项目 canonical timestamp 与常见 legacy `Z` / offset 文本归一为固定宽度 UTC 秒 + 9 位小数秒键，并以专用亚毫秒边界用例证明不会退化到 SQLite `julianday()` 精度，再按 `(recorded_at DESC, event rowid DESC)` 稳定排序；legacy unbounded SQLite snapshot 也走 recent-first 查询。automatic reflection 的候选 scope、manifest 与由候选生成的闭区间会传入同一 snapshot/episode path，跨 namespace 事件不可进入；空候选保持 not-triggered。claims 没有 recorded timestamp，本组不宣称 claim recency filtering。
+
+#### 6.3.4 M0.2 active reflection runtime event-ID 回归
+
+```zsh
+cargo test --test application_use_cases reflection_replaces_with_query_and_explicit_evidence_ids_without_duplication -v
+cargo test --test application_use_cases reflection_rejects_invalid_explicit_event_reference_forms -v
+cargo test --test failure_modes auto_reflection_normalizes_prefixed_proposal_evidence_ids_before_governance_and_audit -v
+cargo test --test mcp_stdio inferred_replacement_reflection_with_evidence_is_accepted_over_stdio -v
+cargo test --test sqlite_store sqlite_reflection_transactions_replace_identity_and_commitments_atomically -v
+```
+
+这组回归验证 active reflection runtime 的 explicit MCP/application evidence、query 合并和 auto-reflection proposal 都把裸 ID 与 `event:<id>` 解析为同一 raw event ID，按首次出现顺序去重，并拒绝空白、空 ID 与重复 `event:` 前缀。存在性校验与 SQLite 查询仍使用 raw ID；reflection audit `supporting_evidence_event_ids` 和 auto-reflection diagnostics 的 `*_event_ids` 是兼容字段，readback 继续断言 raw IDs，而 reference-shaped 输出才使用 canonical `event:<id>`。它不证明 repository-wide ID 统一；offline demo 由 6.3.6 单独覆盖，support bundle 等其他表面仍是 partial。
+
+#### 6.3.5 M0.2 read-only evidence / episode projection event-ID 回归
+
+```zsh
+cargo test --test product_completion_read_models -v
+cargo test --test domain_snapshot raw_and_prefixed_event_ids_share_one_canonical_reference -v
+cargo test --test domain_snapshot invalid_event_references_are_rejected -v
+cargo test --test bootstrap doctor_reports_self_revision_runtime_coverage -v
+```
+
+这组回归验证 evidence relation 的 `trigger_window_event_ids` / `selected_evidence_event_ids` 与 episode summary 的 `episode_event_ids` / `linked_evidence_ids` 都接受裸 ID 和 `event:<id>`，按底层 raw ID 保序去重后再执行 subset/no-widening、`event_count`、selected/rejected count 和 window rank。空白、空 ID、重复前缀 fail closed；projection JSON 的 `event_id` / `*_event_ids` readback 继续保持 raw IDs，不增加持久化、MCP tool 或 runtime read path。它不证明 repository-wide ID 统一；offline demo 由下一节单独覆盖，support bundle 和其他未授权表面仍是 partial。
+
+#### 6.3.6 M0.2 offline self-revision demo event-ID 回归
+
+```zsh
+cargo test --test self_revision_demo_runner -v
+cargo test --test demo_openai_compatible_stub -v
+```
+
+这组回归验证 deterministic demo 的真实边界：runner 不接收 caller-provided event ID；MCP ingest 返回的 raw `event_id` 必须经 `EventReference` fail-closed 解析，并在外部 `timeline.json` 中以 canonical `event_reference = event:<id>` 输出。snapshot 的 `evidence` 原本已是 canonical reference；内置与独立 stub 只返回空 `proposed_evidence_event_ids` 加受控 query，不比较或回显 event ID；SQLite artifact 的 `supporting_evidence_event_ids` 是明确 raw 兼容字段。它不改 SQLite schema、active runtime/projection、发布证据或 provider live path；support bundle 仅作为后续 inventory，repository-wide 统一仍为 partial。
+
+#### 6.3.7 M0.2 收口门禁
+
+```zsh
+./scripts/test-tier.sh fast
+./scripts/test-tier.sh core
+cargo test --test status_sync
+./scripts/status-sync-check.sh
+```
+
+M0.2 只有在 6.3.1–6.3.6 的行为边界由 `fast` / `core` 当前运行覆盖，且 active plan 的 `M0.2 Scoped Snapshot v2` 完成项与 reality-gate 的 `implemented` 行一致时才算收口。该完成状态不证明省略 `namespace` 的 legacy 调用已隔离，不证明完整 memory recall contract、repository-wide event-ID 统一或 support-bundle inventory 已完成，也不授权进入 M0.4、M1、remote 或 release 工作。
+
+### 6.3A M0.3 trusted decision commitments / dual gate 回归
+
+```zsh
+cargo test --test decision_flow -v
+cargo test --test mcp_stdio fresh_stdio_runtime_blocks_forbidden_action_with_seeded_commitment -- --exact
+cargo test --test mcp_stdio provider_selected_forbidden_action_is_blocked_over_stdio -- --exact
+```
+
+这组回归验证：caller 即使从 snapshot 删除 baseline commitment，application 仍从当前 `CommitmentStore` 恢复服务端 policy context，并在 model call 前阻断 requested action；requested action 允许但 provider-selected action 违反同一 commitment 时，结果仍为 blocked、`decision = null`，并保留被拒绝的 `selected_action` 和有界 reason。允许动作继续保持 v2 response envelope 与 provider action-string contract。这个切片单独不证明其余 caller snapshot 字段可信或完整 policy arbitration。
+
+### 6.3B M0.3 claim → evidence → episode provenance 回归
+
+```zsh
+cargo test --test failure_modes auto_reflection_ignores_unrelated_episodes_for_identity_support -- --exact
+cargo test --test failure_modes auto_reflection_rejected_identity_attempt_does_not_start_cooldown_for_later_valid_retry -- --exact
+cargo test --test sqlite_store sqlite_lists_only_episodes_reached_through_claim_evidence_links -- --exact
+```
+
+这组回归验证：匹配 proposed identity value 的 active claims 只有经 persisted evidence link 到达 episode event membership 时才贡献 distinct cross-episode support；全局无关 episode、无 provenance 的 claims 和空 claim 集均不计数。拒绝路径只记录 rejected trigger，不写 reflection 或 identity；具备至少两条真实 episode 路径的后续 retry 仍可通过。该切片复用现有表，不证明完整 provenance graph 或全部治理失败原子性。Scope 完整性由后续 M1.0.1 回归覆盖。
+
+### 6.3C M0.3 governance failure atomicity 回归
+
+```zsh
+cargo test --test failure_modes auto_reflection_commit_failure_records_only_rejected_audit_and_rolls_back_deeper_updates -- --exact
+cargo test --test failure_modes auto_reflection_handled_ledger_failure_rolls_back_reflection_updates -- --exact
+cargo test --test sqlite_store sqlite_handled_ledger_failure_rolls_back_deeper_reflection_updates -- --exact
+```
+
+这组回归把 validation rejection、handled trigger ledger append failure 与 reflection transaction commit failure 分开验证。失败后 identity、commitments、supporting claims/evidence links、reflection 与 handled ledger 必须保持原值或不存在；事务外仅允许一条 `Rejected` trigger entry，且不得带 `reflection_id`、`handled_at` 或 cooldown。SQLite 回归使用 duplicate ledger primary key 让最后的 handled-audit 写入失败，并 readback identity、commitments、reflection 与 ledger 行数。它证明当前本地 transaction path 的原子性，不证明进程崩溃恢复、跨进程事务或分布式一致性。
+
+### 6.3D M0.3 experimental decision authority 回归
+
+```zsh
+cargo test --test decision_flow -v
+cargo test --test mcp_stdio decide_with_snapshot_over_stdio_uses_openai_compatible_provider_from_config_file -- --exact
+cargo test --test mcp_stdio provider_selected_forbidden_action_is_blocked_over_stdio -- --exact
+```
+
+这组回归验证：允许的 provider action-string 保持 legacy `status = model_decision` 与 `{ "action": "..." }` payload，但 additive 返回 `decision_authority = experimental_non_authoritative`、`policy_scope = server_commitment_gate_only` 和 `not an authoritative policy decision` non-claim；blocked 路径返回 `not_applicable_blocked`。因此 commitment gate 未阻断只能解释为该 bounded literal check 未命中，不能解释为 structured action validation 或完整 policy passed。
+
+M0.3 只有在 6.3A–6.3D 的行为边界由当前 `fast` / `core` 运行覆盖，且 active plan 的 `M0.3 Governance Correctness` 与四个子切片都和 reality-gate 的 `implemented` 行一致时才算限定收口。该完成状态不证明 caller snapshot 其余字段可信、server-created snapshot handle、完整 provenance graph、structured action validation、policy arbitration、crash recovery 或 distributed transaction 已实现，也不授权顺带进入 M0.4、M1、remote 或 release 工作。
+
+### 6.3E M0.4 explicit database lifecycle 回归
+
+```zsh
+cargo test --test sqlite_lifecycle -v
+cargo test --test bootstrap -v
+cargo test --test sqlite_backup_restore -v
+bash -n scripts/agent-llm-mm.sh scripts/first-run-bootstrap-smoke-local.sh scripts/release-soak-local.sh
+```
+
+这组回归验证：read-only doctor 对 missing / legacy / read-only file 不 create、migrate 或 seed；`init` 建立 schema version 3、三条 ledger、runtime defaults 和零 FK violation；legacy migration 在原库写入前建立 backup 与 restore rehearsal，在事务中保持行数并通过 FK/readback；rehearsal 失败时原库字节和 schema 保持可恢复；`serve` 拒绝 missing database；`doctor --allow-bootstrap` 的写权限必须显式。release soak 还必须把 lifecycle、doctor、product smoke 和 support bundle 绑定到 candidate-isolated database，并在 `release-boundaries.json` 记录 `formal_database_path_accepted = false`。
+
+M0.4 不证明 remote backup、scheduled backup、cloud sync、production disaster recovery，或超出 SQLite 事务语义的 crash/power-loss guarantee。
+
+### 6.3F M1.1.1 / M1.1.2 / M1.1.3 / M1.1.4 / M1.1.5 / M1.1.6 / M1.2.1 / M1.2.2 / M1.2.3 / M1.2.4 / M1.2.5 / M1.2.6 / M1.2.7 scoped read and correction 回归
+
+```zsh
+cargo test --test sqlite_store sqlite_event_recall -v
+cargo test --test sqlite_store sqlite_claim_recall_is_scoped_status_aware_and_returns_provenance -v
+cargo test --test sqlite_store sqlite_episode_recall -v
+cargo test --test domain_snapshot raw_and_prefixed_claim_ids_share_one_canonical_reference -v
+cargo test --test domain_snapshot invalid_claim_references_are_rejected -v
+cargo test --test evidence_query_dto get_memory_dto -v
+cargo test --test evidence_query_dto get_reflection_history -v
+cargo test --test evidence_query_dto get_self_model_history -v
+cargo test --test evidence_query_dto episode -v
+cargo test --test sqlite_store sqlite_claim_reflection_history -v
+cargo test --test sqlite_store sqlite_self_model_history_is_scoped_claim_attributed_and_hides_record_only_rows -- --exact
+cargo test --test sqlite_store sqlite_supersede_memory_is_scoped_claim_correction_and_hides_cross_scope_targets -- --exact
+cargo test --test evidence_query_dto supersede_memory -v
+cargo test --test mcp_stdio search_memory -v
+cargo test --test mcp_stdio episode -v
+cargo test --test mcp_stdio search_memory_returns_scoped_claims_with_revision_provenance_over_stdio -v
+cargo test --test mcp_stdio search_memory_invalid_or_empty_scope_fails_closed_over_stdio -v
+cargo test --test mcp_stdio search_memory_survives_stdio_reconnect_with_offline_provider -v
+cargo test --test mcp_stdio get_memory_returns_one_scoped_event_or_null_without_widening -v
+cargo test --test mcp_stdio server_exposes_expected_tools_over_stdio -v
+cargo test --test mcp_stdio server_preserves_tool_input_schemas_over_stdio -v
+./scripts/test-tier.sh fast
+./scripts/test-tier.sh core
+cargo test --test status_sync -v
+./scripts/status-sync-check.sh
+```
+
+这组回归证明：`search_memory` 只接受显式 namespace，且省略 additive `record_type` 时继续使用 Event；SQLite 在 filter / limit 前执行 owner + namespace 收窄，exact Event/Claim reference 都不会跨 scope 命中。Event 路径保留完整字段与现有 claim/episode provenance；Claim 路径支持 canonical/raw `claim_reference`、`claim_status`、`mode` 和 `1..=100` limit，省略 status 默认 `Active`，并返回 canonical claim/evidence references、episode references 与直接 source/superseded reflection links。`get_memory` 省略 `record_type` 时保持 canonical/raw Event ID 语义，显式 `record_type = Claim` 时接受 canonical/raw Claim ID；精确 Claim lookup 可返回任意状态，但 missing / cross-scope 仍为 `record: null`。DTO 回归还覆盖 raw Event ID `claim:*` 不被误判为 Claim。
+
+M1.1.3 回归另外证明：`record_type = Episode` 在 `search_memory` 中开放，Episode 必须使用显式 namespace，optional `episode_reference` 只做非空 exact persisted-string 匹配并原样返回。SQLite 在 Episode filter、分组、排序和 limit 之前通过 Event owner + namespace 收窄，并按该 scope 内最新 Event timestamp、Event rowid 与 Episode reference 稳定排序；同一 Episode reference 跨 namespace 时只返回请求 scope 的 membership。结果 `recorded_at` 来自最新 scoped Event，provenance 仅包含 canonical recent-first same-scope Event references 与 canonical same-scope Claim references。断开重连且 provider 不可达时读取仍可用，semantic tables 不变，operation metadata 只记录 `record_type` 与 `result_count`。M1.2.4 再让 `get_memory(record_type = Episode)` 以 `limit = 1` 复用同一 opaque exact reference；missing / 跨 scope 返回 `record: null`，省略类型仍保持 Event。
+
+M1.2.3 回归另外证明：`get_reflection_history` 要求显式 namespace 与 exact Claim anchor，接受 canonical/raw Claim ID，limit 默认 20 且只允许 `1..=100`；SQLite 递归读取 superseded/replacement 双向 chain，并按 newest-first 返回有界结果与 `has_more`。missing/cross-scope Claim 返回空；mixed-scope edge 整条隐藏；supporting evidence 只返回同 scope canonical references；malformed legacy evidence fail closed。断开重连且 provider 不可达时历史读取仍可用，semantic memory tables 不变，operation log metadata 只保存 `history_type`、`result_count`、`has_more`。
+
+该证据只完成 `M1.1.1 Scoped Event Recall Read Model`、`M1.1.2 Scoped Claim Provenance Read`、`M1.1.3 Scoped Episode Provenance Read`、`M1.1.4 Scoped Reflection Provenance Read`、`M1.1.5 Scoped Evidence Relation Runtime Read`、`M1.1.6 Stable Cross-Type Record Union`、`M1.2.1 Scoped Event Lookup`、`M1.2.2 Scoped Claim Lookup`、`M1.2.3 Scoped Claim Reflection History`、`M1.2.4 Scoped Episode Lookup`、`M1.2.5 Scoped Reflection Lookup and Record-only History`、`M1.2.6 Identity and Commitment History` 与 `M1.2.7 Audited Supersede Contract`。M1.0.1 / M1.0.2 / M1.0.3 分别由 6.3G / 6.3H / 6.3I 单独证明。M1.1.4 由 6.3J 单独补充。M1.1.5 由 6.3K 单独补充。M1.1.6 由 6.3L 单独补充。M1.2.4 由 6.3M 单独补充。M1.2.5 由 6.3N 单独补充。M1.2.6 由 6.3O 单独补充。M1.2.7 由 6.3P 单独补充。它不证明 versioned identity/commitment ledger、record-only reflection history、current-schema structural readback、exclusive init/migration、完整 M1.1/M1.2/M1、真实本地客户端 transcript、fresh-machine、Windows、remote 或 Local Alpha；Episode reference normalization、schema migration/index 和规模化性能也未证明，当前仍是 MVP 表扫描边界。
+
+### 6.3G M1.0.1 scoped identity evidence-to-Episode gate
+
+```zsh
+cargo test --test sqlite_store sqlite_lists_only_episodes_reached_through_claim_evidence_links -- --exact
+cargo test --test sqlite_store sqlite_identity_support_ignores_cross_scope_evidence_links -- --exact
+cargo test --test failure_modes auto_reflection_ignores_cross_scope_evidence_links_for_identity_support -- --exact
+cargo test --test application_use_cases episode_store_default_preserves_legacy_calls_and_fails_closed_for_scoped_calls -- --exact
+./scripts/test-tier.sh core
+```
+
+这组回归验证：`list_episode_references_supporting_claims` 必须接收显式 `MemoryScope`；SQLite 在 Episode 分组/计数前同时限制 Claim 与 Evidence Event 的 owner + namespace。恶意跨 namespace evidence link 不能把外 scope Episode 计入 identity revision；legacy unscoped 与不支持该查询的 store 保持 fail closed。该切片复用现有表，不证明完整 provenance graph。
+
+### 6.3H M1.0.2 mixed-scope Claim revision-edge redaction
+
+```zsh
+cargo test --test sqlite_store sqlite_claim_revision_links_hide_mixed_scope_edges -- --exact
+cargo test --test mcp_stdio search_and_get_memory_hide_mixed_scope_claim_revision_edges_over_stdio -- --exact
+cargo test --test mcp_stdio search_memory_returns_scoped_claims_with_revision_provenance_over_stdio -- --exact
+./scripts/test-tier.sh core
+```
+
+这组回归验证：Claim search/get 遇到任一端越 scope 的 revision edge 时整边隐藏，不保留 Reflection ID、另一端 Claim ID、计数或存在性标志；source 与 superseded-by 两个方向、`search_memory` 与 `get_memory` 都覆盖。同 scope revision edge 仍可见。该切片复用现有表，不证明完整 revision graph。
+
+### 6.3I M1.0.3 owner/namespace write-read reachability
+
+```zsh
+cargo test --test domain_invariants unknown_owner_is_not_accepted_for_new_writes -- --exact
+cargo test --test domain_invariants canonical_namespace_pairs_derive_one_write_owner -- --exact
+cargo test --test evidence_query_dto event_and_claim_dtos_reject_unknown_owner_for_new_writes -- --exact
+cargo test --test sqlite_store sqlite_canonical_owner_namespace_writes_are_reachable_through_scoped_reads -- --exact
+cargo test --test sqlite_lifecycle read_only_inspection_inventories_unknown_owner_rows_without_rewriting -- --exact
+./scripts/test-tier.sh core
+```
+
+这组回归验证：新写入只接受 namespace-derived owner；MCP DTO 与 Claim validate 拒绝 `Owner::Unknown`；canonical self/world/user/project 写后可通过同一 scope 读回。只读 doctor inventory 统计 legacy Unknown 行，`rewrite_performed = false`，原行不被改写。scoped 查询不得用 `OR owner = unknown` 扩大结果。
+
+### 6.3J M1.1.4 scoped Reflection provenance read
+
+```zsh
+cargo test --test sqlite_store sqlite_reflection_recall_is_scoped_claim_attributed_and_hides_record_only_rows -- --exact
+cargo test --test evidence_query_dto search_memory_dto_adds_reflection_without_widening_get_memory_record_types -- --exact
+cargo test --test evidence_query_dto search_memory_dto_validates_exact_reflection_filters_and_type_compatibility -- --exact
+cargo test --test mcp_stdio search_memory_returns_scoped_reflection_provenance_and_hides_record_only_over_stdio -- --exact
+cargo test --test mcp_stdio server_preserves_tool_input_schemas_over_stdio -- --exact
+./scripts/test-tier.sh core
+```
+
+这组回归验证：`record_type = Reflection` 只在 `search_memory` 中开放；scope 只能从同 scope superseded Claim 派生，replacement 必须同 scope 或为空。record-only Reflection 不能推断 namespace；mixed-scope edge 整条隐藏；exact missing/cross-scope/record-only reference 返回空。`get_memory` 仍拒绝 Reflection。该切片没有 schema migration / index，也不证明 record-only history、Reflection lookup 或完整 M1。
+
+### 6.3K M1.1.5 scoped evidence-relation runtime read
+
+```zsh
+cargo test --test sqlite_store sqlite_evidence_relation_runtime_is_scoped_intersect_only_and_hides_cross_scope_ids -- --exact
+cargo test --test evidence_query_dto get_evidence_relation_dto_parses_mixed_references_and_defaults_selection -- --exact
+cargo test --test evidence_query_dto get_evidence_relation_dto_rejects_invalid_scope_ids_and_limits -- --exact
+cargo test --test mcp_stdio get_evidence_relation_returns_scoped_window_and_hides_cross_scope_ids_over_stdio -- --exact
+cargo test --test mcp_stdio server_exposes_expected_tools_over_stdio -- --exact
+cargo test --test mcp_stdio server_preserves_tool_input_schemas_over_stdio -- --exact
+./scripts/test-tier.sh core
+```
+
+这组回归验证：第 8 个 MCP 工具 `get_evidence_relation` 要求显式 namespace 与 `trigger_window_event_ids`；裸 ID 与 `event:<id>` 保序去重后，SQLite 只保留同 owner+namespace Event。missing / cross-scope trigger ID 从窗口省略；selected 越 scoped window 时 fail closed。结果返回 canonical `event:<id>`、window_rank、selected / available-not-selected、binary weight 与 rejection reason。路径只读、provider-free，operation metadata 不保存原始 ID 列表。该切片没有 schema migration / index，也不证明 ranking、stable union 或完整 M1。
+
+### 6.3L M1.1.6 stable cross-type record union
+
+```zsh
+cargo test --test sqlite_store sqlite_search_memory_union_is_scoped_stable_sorted_and_hides_cross_scope_types -- --exact
+cargo test --test evidence_query_dto search_memory_dto_adds_union_record_types_without_widening_get_memory -- --exact
+cargo test --test evidence_query_dto search_memory_dto_validates_union_filters_and_type_compatibility -- --exact
+cargo test --test mcp_stdio search_memory_union_returns_scoped_mixed_records_and_preserves_event_default_over_stdio -- --exact
+cargo test --test mcp_stdio server_preserves_tool_input_schemas_over_stdio -- --exact
+./scripts/test-tier.sh core
+```
+
+这组回归验证：additive `record_types` 可请求 Event / Claim / Episode / Reflection 的 scoped union；省略 `record_type` / `record_types` 仍为 Event。两者同时出现、空数组、重复类型或类型专属 filter fail closed。单类型路径保持原 SQL 顺序与 tagged JSON。union 按 `recorded_at DESC`（Claim 无 timestamp 在后）、type rank、id DESC 收口并截断，跨 scope 记录不进入结果。该切片没有 schema migration / index，也不证明 lookup/history/correction 或完整 M1。
+
+### 6.3M M1.2.4 scoped Episode lookup
+
+```zsh
+cargo test --test evidence_query_dto search_memory_dto_adds_episode_without_widening_get_memory_record_types -- --exact
+cargo test --test evidence_query_dto get_memory_dto_rejects_invalid_episode_references -- --exact
+cargo test --test mcp_stdio search_memory_returns_scoped_episode_provenance_over_stdio_without_semantic_writes -- --exact
+cargo test --test mcp_stdio server_preserves_tool_input_schemas_over_stdio -- --exact
+./scripts/test-tier.sh core
+```
+
+这组回归验证：显式 `get_memory(record_type = Episode)` 把 `id` 当作 opaque exact persisted Episode reference，并以 `limit = 1` 复用同一 scoped search。missing、大小写不同或跨 scope ID 返回 `record: null`；省略类型仍按 Event 解析。空白或首尾空白 ID fail closed。该切片没有 schema migration / index，也不证明完整 M1。
+
+### 6.3N M1.2.5 scoped Reflection lookup
+
+```zsh
+cargo test --test evidence_query_dto search_memory_dto_adds_reflection_without_widening_get_memory_record_types -- --exact
+cargo test --test evidence_query_dto get_memory_dto_rejects_invalid_reflection_references -- --exact
+cargo test --test mcp_stdio search_memory_returns_scoped_reflection_provenance_and_hides_record_only_over_stdio -- --exact
+cargo test --test mcp_stdio server_preserves_tool_input_schemas_over_stdio -- --exact
+./scripts/test-tier.sh core
+```
+
+这组回归验证：显式 `get_memory(record_type = Reflection)` 把 `id` 当作 opaque exact persisted reflection ID，并以 `limit = 1` 复用同一 scoped search。missing、cross-scope 与 record-only 都返回 `record: null`，三者不可区分。record-only 行没有 Claim anchor，因此不能进入 scoped lookup 或 history。该切片没有 schema migration / index，也不证明 versioned identity/commitment ledger 或完整 M1。
+
+### 6.3O M1.2.6 scoped identity/commitment revision audit
+
+```zsh
+cargo test --test sqlite_store sqlite_self_model_history_is_scoped_claim_attributed_and_hides_record_only_rows -- --exact
+cargo test --test evidence_query_dto get_self_model_history_dto_requires_history_type_and_defaults_limit -- --exact
+cargo test --test evidence_query_dto get_self_model_history_dto_rejects_invalid_scope_and_limits -- --exact
+cargo test --test mcp_stdio get_self_model_history_returns_scoped_identity_and_commitment_audits_over_stdio -- --exact
+cargo test --test mcp_stdio server_exposes_expected_tools_over_stdio -- --exact
+cargo test --test mcp_stdio server_preserves_tool_input_schemas_over_stdio -- --exact
+./scripts/test-tier.sh core
+```
+
+这组回归验证：第 9 个 MCP 工具 `get_self_model_history(namespace, history_type, limit?)` 要求显式 namespace 与 `Identity` / `Commitment`；limit 默认 20、范围 `1..=100`，并用 `has_more` 表示截断。历史只读取现有 reflection 审计列，归属规则与 Reflection search 相同：必须存在同 scope superseded Claim，replacement 为空或同 scope。record-only 更新与 mixed-scope edge 保持不可见。路径只读、provider-free，operation metadata 仅含 `history_type`、`result_count`、`has_more`。该切片没有 schema migration / 新写路径 / rollback，也不把现态 `identity_claims` / `commitments` 表变成版本账本。
+
+### 6.3P M1.2.7 scoped audited supersede
+
+```zsh
+cargo test --test sqlite_store sqlite_supersede_memory_is_scoped_claim_correction_and_hides_cross_scope_targets -- --exact
+cargo test --test evidence_query_dto supersede_memory_dto_parses_canonical_claim_and_event_references -- --exact
+cargo test --test evidence_query_dto supersede_memory_dto_rejects_invalid_scope_target_and_empty_evidence -- --exact
+cargo test --test mcp_stdio supersede_memory_replaces_scoped_claim_without_hard_delete_over_stdio -- --exact
+cargo test --test mcp_stdio server_exposes_expected_tools_over_stdio -- --exact
+cargo test --test mcp_stdio server_preserves_tool_input_schemas_over_stdio -- --exact
+./scripts/test-tier.sh core
+```
+
+这组回归验证：第 10 个 MCP 工具 `supersede_memory` 要求显式 namespace、Claim 与至少一条 evidence；replacement 必须留在同一 namespace。SQLite 先确认 target 与 evidence 都属于请求 owner+namespace，再调用既有 `run_reflection` 事务。默认 search 只返回新 Active Claim；旧 Claim 仍为 `Superseded` 且 history 可回看。missing / cross-scope 输入 fail closed。operation metadata 只保存 `correction_type` 与 `durable_write_path = run_reflection`。该切片没有 schema migration / 第二条 write path / hard delete，也不证明 Event/Episode/Reflection 纠错或完整 M1。
 
 ### 6.4 Provider 合规预检
 
@@ -573,6 +883,8 @@ cargo test --test provider_config -v
 - `src/bin/demo_openai_compatible_stub.rs`
 - `src/bin/run_self_revision_demo.rs`
 - `scripts/run-self-revision-demo.sh`
+
+runner 必须按时间顺序在 reflection 前生成 `decision-before.json`、在 reflection 后生成 `decision-after.json`。`decide_with_snapshot` 会在每次调用时读取服务端 commitment store，因此不得依靠修订后回放旧 snapshot commitments 来证明 decision shift。
 - `examples/agent-llm-mm.demo.example.toml`
 - automatic self-revision runtime hook / provider / MCP `stdio` 相关代码
 
@@ -673,8 +985,8 @@ cargo test --test first_run_bootstrap_smoke -v
 
 ```zsh
 bash -n scripts/provider-live-certification-run.sh
-cargo test --test provider_live_certification -v
-cargo test --test non_mvp_product_tracks provider_certification -v
+cargo test --features release-tools --test provider_live_certification -v
+cargo test --features release-tools --test non_mvp_product_tracks provider_certification -v
 ```
 
 通过标准：
@@ -694,8 +1006,8 @@ cargo test --test non_mvp_product_tracks provider_certification -v
 
 ```zsh
 bash -n scripts/packaging-archive-evidence.sh
-cargo test --test packaging_archive -v
-cargo test --test non_mvp_product_tracks packaging_preflight -v
+cargo test --features release-tools --test packaging_archive -v
+cargo test --features release-tools --test non_mvp_product_tracks packaging_preflight -v
 ```
 
 通过标准：
@@ -713,7 +1025,7 @@ cargo test --test non_mvp_product_tracks packaging_preflight -v
 
 ```zsh
 bash -n scripts/release-soak-local.sh
-cargo test --test local_alpha_release_evidence release_soak -v
+cargo test --features release-tools --test local_alpha_release_evidence release_soak -v
 ./scripts/release-soak-local.sh local-alpha-YYYYMMDD.1-rc.1
 ```
 
@@ -727,8 +1039,9 @@ cargo test --test local_alpha_release_evidence release_soak -v
 
 - candidate name 只能包含字母、数字、点、下划线或短横线，且不能包含 `..`
 - evidence directory 写入 `target/reports/releases/<candidate-name>/`，目录必须不存在或为空
+- lifecycle database 强制写入 `target/release-soak-runtime/<candidate-name>/release-soak.sqlite`；任何传入 config 的数据库路径都不得成为 soak 写目标
 - 目录内包含 `git-head.txt`、`git-status-before.txt`、`git-status-after.txt`、`command-summary.tsv`、`commands/`、`secret-scan.log`、`artifact-scan.log`、`support-bundle-files.txt`、`support-bundle-sha256.txt`、`product-smoke-latest-files.txt`、`product-smoke-latest-sha256.txt`、`local-alpha-evidence-summary.json`、`local-alpha-evidence-summary.md`、`compatibility-matrix.json`、`release-boundaries.json` 和 `release-soak-summary.md`
-- 运行顺序覆盖 `doctor`、`cargo test --test dashboard_http -v`、product smoke、first-run simulation、support bundle generation、secret scan、raw artifact scan 和 Local Alpha evidence summary
+- 运行顺序覆盖 explicit `init`、`doctor --read-only`、dashboard HTTP、product smoke、first-run simulation、support bundle、scans 和 Local Alpha evidence summary
 - support bundle secret scan 不应发现未脱敏 secret-like marker；raw artifact scan 不应发现 `.sqlite`、`.toml` 或 `.log`
 
 这条 soak 只生成本地候选证据；它不生成真实 fresh-machine evidence、Windows runner evidence、remote/team evidence、上传、source tag、binary package、installer、service manager、auto-updater、release decision 或 GA / production-ready 证明。
@@ -922,7 +1235,17 @@ cargo test --test dashboard_config --test dashboard_recorder --test dashboard_pr
 cargo test --test mcp_stdio dashboard_enabled_does_not_corrupt_mcp_stdout_and_records_tool_event -v
 ```
 
-dashboard HTTP 测试会监听本机端口，受限沙箱中可能需要在允许本地监听的环境运行。该面板只读，不会调用 `run_reflection` 或修改 SQLite；`dashboard_rejects_write_methods_on_read_only_routes` 覆盖 POST / PUT / PATCH / DELETE 返回 `405 Method Not Allowed`，`dashboard_serves_html_summary_events_detail_and_health` 覆盖 HTML、JSON API、health 和 SSE 只读 GET surface。
+dashboard HTTP 测试会监听本机端口，受限沙箱中可能需要在允许本地监听的环境运行。启用 dashboard 时，`DashboardConfig::validate` 只接受 `localhost` 或 loopback IP，明确拒绝 `0.0.0.0`、LAN IP 与域名；disabled 配置可以保留未启用的 host 值但不会启动监听。该面板只读，不会调用 `run_reflection` 或修改 SQLite；`dashboard_rejects_write_methods_on_read_only_routes` 覆盖 POST / PUT / PATCH / DELETE 返回 `405 Method Not Allowed`，`dashboard_serves_html_summary_events_detail_and_health` 覆盖 HTML、JSON API、health 和 SSE 只读 GET surface。
+
+如果改动涉及 CLI tracing 或 `stdio` 隔离，补跑：
+
+```zsh
+cargo test --test bootstrap cli_tracing_writes_to_stderr_without_corrupting_json_stdout -- --exact
+cargo test --test mcp_stdio -v
+```
+
+command-level tracing 在解析 CLI 后初始化并固定写入 stderr。`doctor` 的 JSON 与
+`serve` 的 MCP protocol frames 必须保持在 stdout，任何日志进入 stdout 都是阻断错误。
 
 如果改动涉及 dashboard 视觉或静态物料，还需要确认：
 
@@ -1119,7 +1442,7 @@ git diff --check
 
 ```zsh
 bash -n scripts/release-soak-local.sh
-cargo test --test local_alpha_release_evidence release_soak -v
+cargo test --features release-tools --test local_alpha_release_evidence release_soak -v
 rm -rf target/reports/releases/manual-local-soak
 ./scripts/release-soak-local.sh manual-local-soak
 test -s target/reports/releases/manual-local-soak/release-soak-summary.md
@@ -1137,7 +1460,7 @@ git diff --check
 ### 改 daemon observe-only gate
 
 ```zsh
-rg -n 'observe-only|run_reflection|forbidden|daemon|remote listener' docs/product/daemon-observe-only-gate.md docs/product/release-gate-local-alpha.md docs/roadmap.md docs/progress-tracker.md
+rg -n 'observe-only|run_reflection|forbidden|daemon|remote listener' docs/product/daemon-observe-only-gate.md docs/product/release-gate-local-alpha.md docs/roadmap.md docs/project-status.md
 cargo test --test daemon_config -v
 git diff --check
 ```
@@ -1149,12 +1472,12 @@ git diff --check
 ```zsh
 cargo test --test daemon_config -v
 cargo test --test operation_log -v
-AGENT_LLM_MM_DATABASE_URL=sqlite:///private/tmp/agent-llm-mm-doctor.sqlite ./scripts/agent-llm-mm.sh doctor
-rg -n 'daemon_observe_only|observe-only|writes_allowed|remote_listener_enabled|operation_log' README.md docs/product/daemon-observe-only-gate.md docs/product/release-gate-local-alpha.md docs/project-status.md docs/progress-tracker.md
+AGENT_LLM_MM_DATABASE_URL=sqlite:///private/tmp/agent-llm-mm-doctor.sqlite ./scripts/agent-llm-mm.sh doctor --read-only
+rg -n 'daemon_observe_only|observe-only|writes_allowed|remote_listener_enabled|operation_log' README.md docs/product/daemon-observe-only-gate.md docs/product/release-gate-local-alpha.md docs/project-status.md
 git diff --check
 ```
 
-这组命令验证 `doctor.daemon_observe_only` 的本机只读诊断字段、daemon 默认关闭、observe-only 写入 gate、operation-log status 查询，以及文档口径。`doctor` 的 runtime bootstrap 仍会执行既有 SQLite 初始化和 baseline guard 初始化，但 `doctor` 本身不启动 daemon handle；observe-only diagnostics 本身只能读取本地 `operation_log` 的 failed / suppressed `tool` 与 `trigger` 候选，不能调用 `run_reflection`、不能新增 identity / commitments / claims / events / reflections 语义写入，也不能声明 daemon 已具备后台自治。
+这组命令验证 `doctor.daemon_observe_only` 的本机只读诊断字段、daemon 默认关闭、observe-only 写入 gate、operation-log status 查询，以及文档口径。doctor 不执行 runtime bootstrap，也不启动 daemon handle；数据库不是 current 时只报告 operation-log unavailable。diagnostics 不能调用 `run_reflection`、不能新增 identity / commitments / claims / events / reflections 语义写入，也不能声明 daemon 已具备后台自治。
 
 ### 改 correlation id / operation log observability
 
@@ -1189,8 +1512,10 @@ cargo test --test mcp_stdio
 ```zsh
 cargo fmt --check
 git diff --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test
+./scripts/test-tier.sh fast
+cargo clippy --all-targets -- -D warnings
+./scripts/status-sync-check.sh
+./scripts/test-tier.sh core
 AGENT_LLM_MM_DATABASE_URL=sqlite:///private/tmp/agent-llm-mm-doctor.sqlite ./scripts/agent-llm-mm.sh doctor
 ```
 
@@ -1200,19 +1525,22 @@ demo / MVP 发布前核验不使用这段简表作为最终依据；请按 [Rele
 
 ## 11. 当前结论
 
-截至 `2026-05-14`，推荐把下面五条当作普通提交前基线；demo / MVP 发布前仍以 [Release Gate](release-gate.md) 为准；Local Alpha / product alpha 发布前以 [Local Alpha Release Gate](product/release-gate-local-alpha.md) 为准：
+截至 `2026-08-09`，推荐把下面七条当作普通提交前基线；demo / MVP 发布前仍以 [Release Gate](release-gate.md) 为准；Local Alpha / product alpha 发布前以 [Local Alpha Release Gate](product/release-gate-local-alpha.md) 为准：
 
 ```zsh
 cargo fmt --check
 git diff --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test
+./scripts/test-tier.sh fast
+cargo clippy --all-targets -- -D warnings
+./scripts/status-sync-check.sh
+./scripts/test-tier.sh core
 AGENT_LLM_MM_DATABASE_URL=sqlite:///private/tmp/agent-llm-mm-doctor.sqlite ./scripts/agent-llm-mm.sh doctor
 ```
 
-如果这五条都通过，说明当前工作树至少满足：
+如果这七条都通过，说明当前工作树至少满足：
 
 - 编码规范通过
 - 编译与静态检查通过
+- 当前 active plan 与 reality gate 同步，且根目录没有误回流的 `not-a-sqlite-url` SQLite 文件
 - `namespace`、SQLite migration、MCP `stdio`、reflection 闭环和 automatic self-revision MVP 基线都可继续追加定向验证
 - 本机运行时 bootstrap 正常

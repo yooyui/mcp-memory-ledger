@@ -577,8 +577,13 @@ fn release_soak_script_captures_local_evidence_without_remote_or_write_claims() 
         script.contains("usage: ./scripts/release-soak-local.sh <candidate-name> [config_path]")
     );
     assert!(script.contains("target/reports/releases"));
+    assert!(script.contains("target/release-soak-runtime"));
+    assert!(script.contains("isolated_database_path"));
+    assert!(script.contains("AGENT_LLM_MM_DATABASE_URL=${isolated_database_url}"));
+    assert!(script.contains("formal_database_path_accepted"));
+    assert!(script.contains("database-init"));
     assert!(script.contains("./scripts/agent-llm-mm.sh"));
-    assert!(script.contains("doctor"));
+    assert!(script.contains("doctor --read-only"));
     assert!(script.contains("cargo test --test dashboard_http -v"));
     assert!(script.contains("scripts/product-smoke-local.sh"));
     assert!(script.contains("scripts/generate-support-bundle.sh"));

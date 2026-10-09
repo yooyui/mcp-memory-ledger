@@ -10,15 +10,16 @@ Runs a bounded local release soak and writes candidate-specific evidence under:
   target/reports/releases/<candidate-name>/
 
 The soak covers:
-  1. ./scripts/agent-llm-mm.sh doctor [config_path]
-  2. cargo test --test dashboard_http -v
-  3. scripts/product-smoke-local.sh [config_path]
-  4. scripts/first-run-bootstrap-smoke-local.sh target/first-run-bootstrap-smoke/local-alpha-gate
-  5. scripts/generate-support-bundle.sh target/support-bundles/local-alpha-gate [config_path]
-  6. support-bundle secret and raw-artifact scans
-  7. support-bundle and product-smoke SHA-256 manifests
-  8. scripts/local-alpha-evidence-summary.sh into the release evidence directory
-  9. compatibility-matrix.json and release-boundaries.json blocker artifacts
+  1. explicit init of a candidate-isolated SQLite database
+  2. ./scripts/agent-llm-mm.sh doctor --read-only [config_path]
+  3. cargo test --test dashboard_http -v
+  4. scripts/product-smoke-local.sh [config_path]
+  5. scripts/first-run-bootstrap-smoke-local.sh target/first-run-bootstrap-smoke/local-alpha-gate
+  6. scripts/generate-support-bundle.sh target/support-bundles/local-alpha-gate [config_path]
+  7. support-bundle secret and raw-artifact scans
+  8. support-bundle and product-smoke SHA-256 manifests
+  9. scripts/local-alpha-evidence-summary.sh into the release evidence directory
+  10. compatibility-matrix.json and release-boundaries.json blocker artifacts
 
 This command only creates local release evidence. It does not create Windows
 runner evidence, real fresh-machine evidence, remote/team evidence, uploads,
@@ -79,13 +80,33 @@ support_bundle_sha256="${evidence_dir}/support-bundle-sha256.txt"
 product_smoke_latest_sha256="${evidence_dir}/product-smoke-latest-sha256.txt"
 compatibility_matrix_json="${evidence_dir}/compatibility-matrix.json"
 release_boundaries_json="${evidence_dir}/release-boundaries.json"
+runtime_dir="target/release-soak-runtime/${candidate_name}"
+isolated_database_path="${project_root}/${runtime_dir}/release-soak.sqlite"
+isolated_database_url="sqlite://${isolated_database_path//\\//}"
 
 if [[ -e "${evidence_dir}" && -n "$(find "${evidence_dir}" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
   printf 'release soak failed: evidence directory must be absent or empty: %s\n' "${evidence_dir}" >&2
   exit 2
 fi
+if [[ -e "${runtime_dir}" && -n "$(find "${runtime_dir}" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+  printf 'release soak failed: isolated runtime directory must be absent or empty: %s\n' "${runtime_dir}" >&2
+  exit 2
+fi
 
-mkdir -p "${commands_dir}"
+mkdir -p "${commands_dir}" "${runtime_dir}"
+
+case "${isolated_database_path}" in
+  "${project_root}/target/release-soak-runtime/${candidate_name}/"*)
+    ;;
+  *)
+    printf 'release soak failed: isolated database escaped candidate runtime directory\n' >&2
+    exit 2
+    ;;
+esac
+if [[ -e "${isolated_database_path}" ]]; then
+  printf 'release soak failed: isolated database already exists: %s\n' "${isolated_database_path}" >&2
+  exit 2
+fi
 
 started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 printf 'step\tstarted_at\tended_at\texit_code\tcommand\n' > "${command_summary}"
@@ -175,16 +196,24 @@ write_sha256_manifest() {
   fi
 }
 
-doctor_command=(./scripts/agent-llm-mm.sh doctor)
-product_smoke_command=(scripts/product-smoke-local.sh)
-support_bundle_command=(scripts/generate-support-bundle.sh "${support_bundle_dir}")
+isolated_env=(env -u AGENT_LLM_MM_CONFIG "AGENT_LLM_MM_DATABASE_URL=${isolated_database_url}")
+init_command=("${isolated_env[@]}" ./scripts/agent-llm-mm.sh init)
+doctor_command=("${isolated_env[@]}" ./scripts/agent-llm-mm.sh doctor --read-only)
+product_smoke_command=("${isolated_env[@]}" scripts/product-smoke-local.sh)
+support_bundle_command=("${isolated_env[@]}" scripts/generate-support-bundle.sh "${support_bundle_dir}")
 
 if [[ -n "${resolved_config_path}" ]]; then
+  init_command+=("${resolved_config_path}")
   doctor_command+=("${resolved_config_path}")
   product_smoke_command+=("${resolved_config_path}")
   support_bundle_command+=("${resolved_config_path}")
 fi
 
+run_step database-init "${init_command[@]}"
+if [[ ! -f "${isolated_database_path}" ]]; then
+  printf 'release soak failed: explicit init did not create the isolated database\n' >&2
+  exit 1
+fi
 run_step doctor "${doctor_command[@]}"
 run_step dashboard-http cargo test --test dashboard_http -v
 run_step product-smoke "${product_smoke_command[@]}"
@@ -275,6 +304,11 @@ cat > "${release_boundaries_json}" <<EOF
   "candidate": "${candidate_name}",
   "product_boundary": "local Rust MCP stdio memory MVP / technical demo entering productization",
   "local_only": true,
+  "database_isolation": {
+    "enforced": true,
+    "path_shape": "sqlite://<candidate-isolated-path>",
+    "formal_database_path_accepted": false
+  },
   "external_blockers": [
     {
       "subject": "fresh_machine",
@@ -337,6 +371,8 @@ cat > "${release_summary_md}" <<EOF
 - ended_at: \`${ended_at}\`
 - evidence_dir: \`${evidence_dir}\`
 - config_path_shape: \`${redacted_config_path}\`
+- database_isolation: \`candidate-specific / enforced\`
+- database_path_shape: \`sqlite://<candidate-isolated-path>\`
 - boundary: local-only release evidence; not Windows parity, real fresh-machine evidence, remote/team evidence, upload, release certification, or GA readiness
 
 ## Evidence Files

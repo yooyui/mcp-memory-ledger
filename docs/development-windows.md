@@ -4,12 +4,14 @@
 
 ## 1. 环境前提
 
-- 已安装 Rust toolchain
+- 已安装 `rustup`；仓库声明 Rust `1.95.0`、`rustfmt` 与 `clippy`，但该声明本身不构成 Windows runtime parity 证据
 - `cargo` 可用
 - 已安装 PowerShell 7
 - 当前仓库内提供 Windows 入口脚本：
   - `pwsh -File .\scripts\agent-llm-mm.ps1 bootstrap-local`
-  - `pwsh -File .\scripts\agent-llm-mm.ps1 doctor`
+  - `pwsh -File .\scripts\agent-llm-mm.ps1 init`
+  - `pwsh -File .\scripts\agent-llm-mm.ps1 doctor --read-only`
+  - `pwsh -File .\scripts\agent-llm-mm.ps1 migrate`
   - `pwsh -File .\scripts\agent-llm-mm.ps1 serve`
 
 ## 2. 进入项目目录
@@ -63,26 +65,29 @@ database_url = "sqlite:///D:/agent-llm-mm/dev.sqlite"
 
 ## 4. 本机预检
 
-本地产品化启动顺序是 bootstrap / config first, doctor second：先准备本机配置，再让 `doctor` 证明配置、SQLite 路径、provider 形态和 daemon 默认状态可用，最后启动 `serve`。PowerShell 入口脚本的契约固定为 `[serve|doctor|bootstrap-local] [config_path]`；没有 `doctor-config` 或 `serve-config` alias，传入其它 mode 会返回 exit code `2`。
+本地启动顺序是 config → explicit init/migrate → read-only doctor → serve。新库用 `init`；旧库先查看 `doctor --read-only` 再显式 `migrate`；`serve` 不隐式 bootstrap。PowerShell 模式为 `serve|init|migrate|doctor|bootstrap-local`，doctor 可选 `--read-only`（默认）或显式 `--allow-bootstrap`。
 
 ```powershell
-pwsh -File .\scripts\agent-llm-mm.ps1 doctor
+pwsh -File .\scripts\agent-llm-mm.ps1 init
+pwsh -File .\scripts\agent-llm-mm.ps1 doctor --read-only
 ```
 
 示例 profile 是结构模板，包含占位 `database_url`。先复制到 `agent-llm-mm.local.toml`，替换为本机可写 SQLite 路径后，再检查本机私有配置；如果选择 prod-local profile，还必须同时替换 `base_url`、`model`，并配置本机私有 `api_key` 或 `api_key_env`：
 
 ```powershell
-pwsh -File .\scripts\agent-llm-mm.ps1 doctor .\agent-llm-mm.local.toml
+pwsh -File .\scripts\agent-llm-mm.ps1 init .\agent-llm-mm.local.toml
+pwsh -File .\scripts\agent-llm-mm.ps1 doctor --read-only .\agent-llm-mm.local.toml
 ```
 
 预期输出为 JSON，至少包含：
 
 - `transport`
 - `database_url`
+- `database_lifecycle`
 - `provider`
 - `status`
 
-当前仓库新增的 `scripts/first-run-bootstrap-smoke-local.sh` 是 bash 本地首启模拟脚本；在 Windows 上只能从 Git Bash、WSL，或等价 bash 环境运行。它用于模拟 `bootstrap-local -> doctor`，不会替代 PowerShell runtime parity 证据。Windows install/bootstrap gate 仍需要 Windows runner 或 Windows 实机记录。
+当前 `scripts/first-run-bootstrap-smoke-local.sh` 是 bash 本地首启模拟脚本；在 Windows 上只能从 Git Bash、WSL 或等价环境运行。它模拟 `bootstrap-local -> init -> doctor --read-only`，不会替代 PowerShell runtime parity 证据。
 
 ## 5. 启动 MCP 服务
 
@@ -109,10 +114,15 @@ transport = "stdio"
 ```powershell
 cargo fmt --check
 git diff --check
-cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --all-targets -- -D warnings
 cargo test
-pwsh -File .\scripts\agent-llm-mm.ps1 doctor
+pwsh -File .\scripts\agent-llm-mm.ps1 doctor --read-only
 ```
+
+涉及发布证据、打包或 provider certification 工具时，再运行
+`cargo clippy --all-targets --all-features -- -D warnings` 和
+`cargo test --all-features`。`scripts/test-tier.sh` 是 bash 入口；Windows 原生
+PowerShell 环境使用上面的等价 Cargo 命令。
 
 发布前请按 [Release Gate](release-gate.md) 跑完整 gate；本节只是 Windows 日常验证入口。Release gate 中的 `./scripts/agent-llm-mm.sh doctor` 在 Windows 上对应 `pwsh -File .\scripts\agent-llm-mm.ps1 doctor`。
 如果判断 Local Product Alpha / product alpha 口径，还必须改用 [Local Alpha Release Gate](product/release-gate-local-alpha.md)；普通 `doctor` 通过不等于 Local Alpha 完成。
@@ -124,7 +134,7 @@ pwsh -File .\scripts\agent-llm-mm.ps1 doctor
 
 | Symptom | Likely Cause | Verification | Fix |
 | --- | --- | --- | --- |
-| `doctor` cannot write SQLite | database path not writable or sandbox restriction | 先检查 `agent-llm-mm.local.toml` 的 `database_url` 与 PowerShell 启动环境里的 `AGENT_LLM_MM_DATABASE_URL`；如果 `doctor` 已返回 JSON，再核对其中的 `database_url` | 设置 `AGENT_LLM_MM_DATABASE_URL` 到可写 SQLite 路径，或在本地 TOML 固定可写路径后重试 |
+| `init` / `migrate` cannot write SQLite | database path not writable or sandbox restriction | 先用 `doctor --read-only` 查看 lifecycle 状态，再检查 config 与环境覆盖 | 为显式 lifecycle command 设置可写路径；不要为只读 doctor 放宽正式库权限 |
 | MCP client starts the wrong binary | auxiliary `src/bin` target ambiguity | 检查 MCP 客户端配置里的参数是否带 `--bin agent_llm_mm`（如 `args = ["run", "--quiet", "--bin", "agent_llm_mm", "--", "serve"]`） | 统一使用 PowerShell 脚本入口，或在客户端里固定 `cargo run --quiet --bin agent_llm_mm -- serve` |
 | dashboard not visible | `[dashboard].enabled` 为 false，或端口不可用 | 查看 TOML 的 `[dashboard]` 区块和 `enabled`，以及 `pwsh -File .\scripts\agent-llm-mm.ps1 doctor` 输出 | 设置 `[dashboard].enabled = true`，并改用可用的本地端口（如 `127.0.0.1:8787`） |
 | model calls fail | provider 配置不完整 | 执行 `pwsh -File .\scripts\agent-llm-mm.ps1 doctor`，确认 `provider`、`base_url`、`model` 已配置 | 在本地 TOML 更新 provider 信息；密钥仅放本地文件，不要提交 |

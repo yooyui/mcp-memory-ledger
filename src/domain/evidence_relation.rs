@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::error::AppError;
+use crate::{domain::event::EventReference, error::AppError};
 
 pub const EVIDENCE_RELATION_PROTOCOL_VERSION: u32 = 2;
 pub const EVIDENCE_RELATION_NO_WIDENING_POLICY: &str = "selected_subset_of_trigger_window";
@@ -43,8 +43,8 @@ pub struct EvidenceRelation {
 pub fn build_evidence_relation_report(
     input: EvidenceRelationInput,
 ) -> Result<EvidenceRelationReport, AppError> {
-    let selected_ids = dedupe(input.selected_evidence_event_ids);
-    let trigger_window_ids = dedupe(input.trigger_window_event_ids);
+    let selected_ids = normalize_event_ids(input.selected_evidence_event_ids)?;
+    let trigger_window_ids = normalize_event_ids(input.trigger_window_event_ids)?;
     let trigger_window_set = trigger_window_ids.iter().cloned().collect::<HashSet<_>>();
 
     if let Some(outside_id) = selected_ids
@@ -104,12 +104,18 @@ fn rejection_reason(selected: bool) -> Option<&'static str> {
     (!selected).then_some(EVIDENCE_RELATION_NOT_SELECTED_REASON)
 }
 
-fn dedupe(values: Vec<String>) -> Vec<String> {
-    let mut deduped = Vec::new();
+/// Projection `*_event_ids` keep raw compatibility readback, while accepting
+/// either a raw id or an `event:<id>` reference at their boundary.
+fn normalize_event_ids(values: Vec<String>) -> Result<Vec<String>, AppError> {
+    let mut normalized = Vec::new();
     for value in values {
-        if !deduped.contains(&value) {
-            deduped.push(value);
+        let event_id = EventReference::parse(value)
+            .map_err(AppError::from)?
+            .event_id()
+            .to_string();
+        if !normalized.contains(&event_id) {
+            normalized.push(event_id);
         }
     }
-    deduped
+    Ok(normalized)
 }

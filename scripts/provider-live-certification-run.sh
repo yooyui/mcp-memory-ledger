@@ -72,4 +72,4 @@ if [[ -n "${config_path}" ]]; then
   args+=(--config-path "${config_path}")
 fi
 
-cargo run --quiet --bin provider_live_certification_run -- "${args[@]}"
+cargo run --quiet --features release-tools --bin provider_live_certification_run -- "${args[@]}"

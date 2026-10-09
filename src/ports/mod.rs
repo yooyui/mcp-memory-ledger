@@ -12,6 +12,7 @@ pub mod episode_store;
 pub mod event_store;
 pub mod id_generator;
 pub mod identity_store;
+pub mod memory_read_store;
 pub mod model_port;
 pub mod operation_log_store;
 pub mod reflection_store;
@@ -28,6 +29,13 @@ pub use episode_store::EpisodeStore;
 pub use event_store::{EventStore, EvidenceQuery, StoredEvent};
 pub use id_generator::IdGenerator;
 pub use identity_store::IdentityStore;
+pub use memory_read_store::{
+    ClaimReadRecord, ClaimRecordQuery, ClaimReflectionHistoryPage, ClaimReflectionHistoryQuery,
+    ClaimReflectionHistoryRecord, ClaimRevisionLinks, EpisodeReadRecord, EpisodeRecordQuery,
+    EventReadRecord, EventRecordQuery, MAX_EVENT_RECORD_QUERY_LIMIT, MemoryReadStore,
+    ReflectionProvenanceLinks, ReflectionReadRecord, ReflectionRecordQuery, ScopedEventIdQuery,
+    SelfModelHistoryKind, SelfModelHistoryPage, SelfModelHistoryQuery, SelfModelHistoryRecord,
+};
 pub use model_port::{ModelDecision, ModelDecisionRequest, ModelInput, ModelPort};
 pub use operation_log_store::{OperationLogQuery, OperationLogStore};
 pub use reflection_store::{ReflectionStore, StoredReflection};

@@ -9,8 +9,9 @@ usage: scripts/first-run-bootstrap-smoke-local.sh [output_dir]
 Runs a local-only first-run bootstrap simulation:
   1. ./scripts/agent-llm-mm.sh bootstrap-local <output_dir>/agent-llm-mm.local.toml
   2. rewrites database_url to <output_dir>/first-run.sqlite
-  3. ./scripts/agent-llm-mm.sh doctor <output_dir>/agent-llm-mm.local.toml
-  4. writes doctor.json and summary.json under output_dir
+  3. ./scripts/agent-llm-mm.sh init <output_dir>/agent-llm-mm.local.toml
+  4. ./scripts/agent-llm-mm.sh doctor --read-only <output_dir>/agent-llm-mm.local.toml
+  5. writes init.json, doctor.json and summary.json under output_dir
 
 This is fresh-machine simulation evidence only. It does not start serve, run the
 product smoke script, prove a real fresh-machine install, or prove Windows
@@ -65,10 +66,12 @@ config_path="${output_dir}/agent-llm-mm.local.toml"
 database_path="${output_dir}/first-run.sqlite"
 database_url="sqlite://${database_path//\\//}"
 doctor_path="${output_dir}/doctor.json"
+init_path="${output_dir}/init.json"
 summary_path="${output_dir}/summary.json"
 bootstrap_stdout="${output_dir}/bootstrap.stdout"
 bootstrap_stderr="${output_dir}/bootstrap.stderr"
 doctor_stderr="${output_dir}/doctor.stderr"
+init_stderr="${output_dir}/init.stderr"
 
 json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
@@ -117,7 +120,10 @@ env -u AGENT_LLM_MM_CONFIG -u AGENT_LLM_MM_DATABASE_URL \
 replace_database_url
 
 env -u AGENT_LLM_MM_CONFIG -u AGENT_LLM_MM_DATABASE_URL \
-  ./scripts/agent-llm-mm.sh doctor "${config_path}" > "${doctor_path}" 2> "${doctor_stderr}"
+  ./scripts/agent-llm-mm.sh init "${config_path}" > "${init_path}" 2> "${init_stderr}"
+
+env -u AGENT_LLM_MM_CONFIG -u AGENT_LLM_MM_DATABASE_URL \
+  ./scripts/agent-llm-mm.sh doctor --read-only "${config_path}" > "${doctor_path}" 2> "${doctor_stderr}"
 
 require_doctor_field '"status": "ok"' 'status ok'
 require_doctor_field '"provider": "mock"' 'mock provider'
@@ -148,6 +154,7 @@ cat > "${summary_path}" <<SUMMARY
   "config_path": "${escaped_config_path}",
   "database_path": "${escaped_database_path}",
   "database_url": "${escaped_database_url}",
+  "init_path": "init.json",
   "doctor_path": "doctor.json",
   "doctor_status": "ok",
   "provider": "mock",
@@ -168,5 +175,6 @@ cat > "${summary_path}" <<SUMMARY
 SUMMARY
 
 printf 'first-run bootstrap smoke: local simulation passed under %s\n' "${output_dir}"
+printf 'first-run bootstrap smoke: init evidence: %s\n' "${init_path}"
 printf 'first-run bootstrap smoke: doctor evidence: %s\n' "${doctor_path}"
 printf 'first-run bootstrap smoke: summary evidence: %s\n' "${summary_path}"
