@@ -1,3 +1,54 @@
+## 2026-10-10 schema7 独立实现切片
+
+有界 global identity/commitment append-only ledger 已在本轮本地代码中实现：真实初始化/迁移 baseline0、单调版本、来源安全 ordered diff、记录边界 effective time、expected-version guard 和显式同范围组件补偿回滚。生产写路径仍仅 `run_reflection`；新 rollback 继续要求 Claim anchor、显式同范围来源、新提供的有效证据、confirm 和 durable request_id。迁移/恢复、旧回执字节、漂移 fail-closed、原子失败、范围防泄漏和结构门须随源代码测试。见[合同](../self-model-versions.md)。
+
+- [x] **M3.1.1 Bounded Global Self-Model Versions** — schema7 版本、来源安全 diff 和显式补偿已实现；673 项 all-feature Rust 测试与本地 MCP/恢复闭环通过，见[阶段结果](2026-10-10-schema7-results.md)。这不关闭真实平台、用户客户端、模型效果或发布门。
+
+这项依赖调整允许在已隔离本地工作区继续实现，按阶段提交远程分支并独立验证精确提交 CI，不继承旧 head 的结果。M1 真实客户端、M2 fresh-machine、真实模型效果、人工发布与 remote/autonomy 门不关闭。以下原先“稍后实施 version ledger”的叙述保留当时顺序，不覆盖本段当前状态。
+
+## 2026-10-10 文档缺口续建：本地包与 Windows wrapper
+
+重新核对上游 `dev-work@c318caf`、独立分支 `dev_work_dots@73fb00a` 和实际实现后，本轮先补 M2 两项可实施缺口：
+
+1. 从确定 Git commit/tree 构建原生 portable archive，携带来源、工具链和文件校验信息；解包后用隔离 mock 库验证无 Rust 的核心闭环。
+2. 实际执行 PowerShell wrapper 的 bootstrap、路径、环境恢复、错误码和 stdio 合同，并由 Windows CI 提供该平台证据。
+
+包/wrapper 阶段 `0ca8bccc64cadb3f1eae9d1a74bad602a1c60bc9` 已通过 [三平台精确提交 CI](https://github.com/yooyui/mcp-memory-ledger/actions/runs/38035347484)，包括 Windows PowerShell 7.6.6 的实际 wrapper 与三平台原生包解包闭环；具体测试数与支持边界见[当前状态](../project-status.md)。
+
+已有 archive inspector 仅检查预先存在的文件，不能代替源代码构建；已有 Windows native 测试不能代替 wrapper 行为。本地/CI 解包验证仍是受控安装模拟，M1 真实用户客户端、M2 fresh-machine 十分钟验收、真实 provider 与人工发布决定继续开放。正式 tag、release、部署和付费模型实验不在本次实现权限内。
+
+这组代码已通过独立审查、同源测试和精确提交 CI；append-only global identity/commitment version ledger 作为独立切片提交并重新验证。版本、diff、有效时间与显式补偿回滚须保持现有 `run_reflection` 写边界、expected-version 冲突检测、证据审计和 schema 迁移恢复合同；不新增自动回滚、全局权限或数据删除政策。
+
+---
+
+## 2026-10-09 当前执行状态（文档整理后）
+
+本文件仍是唯一 active plan。下方同日“续建”段落保留任务展开时的历史语境：schema6、M01–M03 模块拆分、D09–D10 上下文/诊断与 C09 caller budget 均已实现；不要再次领取已完成代码任务。实现基线 `9ba0050` 的三平台精确 CI 已通过，见[最终核对](2026-10-09-original-plan-final-reconciliation.md)与[当前状态](../project-status.md)。当前剩余是 M1 真实用户客户端、M2 fresh-machine/打包/发布与真实模型效果等明确外部门；本次文档整理不将其标为完成。原有 checkbox/reality-gate 配对继续保留。
+
+## 2026-10-09 数据模型续建（schema v6）
+
+全部原文 ID 的最新收口状态与停止条件见[最终核对](2026-10-09-original-plan-final-reconciliation.md)。
+
+原文 S01/S02/S06 是可实施要求，不是需要再次授权的研究项。本阶段交付记录时间/观察时间区分、未知历史 nullable、无损纳秒排序键与索引、独立 Reflection origin/affected scope、source-scoped targetless history 及只读有界 structured export。历史混合/未知归属保持隔离，不从 affected scope 推导读取权限。非破坏性 export 是 interchange；数据库备份仍承担恢复，retain-all 不启用自动删除。既有 keyed receipts 与 Claim fingerprintv1 保持兼容。
+
+该阶段之后已独立完成原文 M01–M03 的 crate 内模块拆分、D09 的有界丰富 Episode 证据、D10 的可观察状态诊断及 C09 的 caller-owned 次数/停止合同；不引入新框架、控制器或全局变更权限。每阶段独立测试、提交和用户更新。v5 的性能/评测文件保持原始来源绑定；v6 与后续 refactor 需要各自新证据，不复用历史“通过”。
+
+---
+
+## 2026-10-09 原方案续建（本地验证通过；精确提交 CI 见草稿 PR）
+
+用户明确要求按原始讨论继续规划与实现，完成“基本可用性候选”不是本轮停止条件。[完整原文要求追踪矩阵](2026-10-09-original-plan-traceability.md)冻结于 e14a59e，逐项区分已有实现与缺口；它是本执行队列的验收依据，不是第二套产品架构。
+
+逐项实现增量及仍开放的要求见 [续建结果映射](2026-10-09-continuation-results.md)。
+
+本轮有限交付顺序为：A 固定反馈/状态合同和离线 A/B/C + 消融样本；B 延续原子审计与幂等，并增加内容指纹 stale-version 校验；C 外部反馈→候选→确定性支持合同→原子提交→召回；D SQLite FTS 可重建派生索引、短中文精确 fallback、类型预算/解释及 10k/100k 测量；E 持久化有界 Episode 与可检查、拒绝、版本化、回滚的语义/流程候选。新层必须随 schema 显式迁移、恢复测试和同提交文档交付。候选激活仅影响记忆可见性，不改变行为权限。
+
+依赖调整：已完成的生命周期和有界本地安装闭环允许提前实现这组本地检索/经验运行时切片，以验证原方案的反馈闭环；M2 的真实 fresh-machine、正式打包、完整 Windows shell-wrapper 门，以及 M3 的广泛真实模型收益门仍保持开放。不得将这次前移解释成正式 Local Alpha/生产认证。当时仍 partial 的数据模型规范化和大模块拆分，后续结果已由最终核对逐项更新；冻结 baseline 不回写，避免改变历史判断。
+
+验证分两层：无外部模型调用的固定离线代理指标、10k/100k 容量与事务行为可在本轮运行；同模型同任务的真实成功率/token 成本仅提供记录协议，未获模型服务与费用授权前不调用或声称通过。embedding、远程团队平台、强化学习、自治控制器仍按原文研究边界后移。
+
+---
+
 # MCP Memory Ledger 全新项目规划
 
 状态：`active / M0 complete / M1 active / M1.0.1, M1.0.2, M1.0.3, M1.1.1, M1.1.2, M1.1.3, M1.1.4, M1.1.5, M1.1.6, M1.2.1, M1.2.2, M1.2.3, M1.2.4, M1.2.5, M1.2.6 and M1.2.7 complete`
@@ -31,7 +82,7 @@ MCP Memory Ledger 已经拥有可运行的 Rust + SQLite + MCP `stdio` 核心、
 ### 2.1 已实现
 
 - 单一 Rust crate，正式 CLI 为 `serve` 与 `doctor`。
-- MCP `stdio` 运行时暴露 10 个工具：`ingest_interaction`、`search_memory`、`get_memory`、`get_reflection_history`、`get_self_model_history`、`get_evidence_relation`、`supersede_memory`、`build_self_snapshot`、`decide_with_snapshot`、`run_reflection`。其中 `search_memory` 已覆盖显式 scope 的 Event、Claim、Episode 与 Reflection provenance 首片，`get_memory` 已覆盖 Event、Claim、Episode 与 scoped Reflection 首片，`get_reflection_history` 已覆盖 exact scoped Claim revision chain 首片，`get_self_model_history` 已覆盖 scoped identity/commitment revision audit 首片，`get_evidence_relation` 已覆盖 scoped evidence-relation runtime 首片，`supersede_memory` 已覆盖 scoped Claim audited supersede 首片。
+- MCP `stdio` 运行时暴露 12 个工具（新增 `recall_memory`、`build_task_context`）：`ingest_interaction`、`search_memory`、`get_memory`、`get_reflection_history`、`get_self_model_history`、`get_evidence_relation`、`supersede_memory`、`build_self_snapshot`、`decide_with_snapshot`、`run_reflection`。其中 `search_memory` 已覆盖显式 scope 的 Event、Claim、Episode 与 Reflection provenance 首片，`get_memory` 已覆盖 Event、Claim、Episode 与 scoped Reflection 首片，`get_reflection_history` 已覆盖 exact scoped Claim revision chain 首片，`get_self_model_history` 已覆盖 scoped identity/commitment revision audit 首片，`get_evidence_relation` 已覆盖 scoped evidence-relation runtime 首片，`supersede_memory` 已覆盖 scoped Claim audited supersede 首片。
 - SQLite 持久化 events、claims、evidence links、episode events、reflections、trigger ledger、identity、commitments 和 operation log。
 - ingest 与 reflection 具备事务边界；`run_reflection` 是当前 identity / commitments 的唯一 durable write path。
 - mock、OpenAI-compatible 和 OpenRouter provider 路径存在。
@@ -47,7 +98,7 @@ MCP Memory Ledger 已经拥有可运行的 Rust + SQLite + MCP `stdio` 核心、
 | F-03 | M0.3 已用 claim → evidence → episode distinct join 替代全局数量推断，并覆盖 governance transaction failure atomicity | 现有 join 仍不是完整 provenance graph，事务证据也不是 crash recovery | M0.3 限定退出门已通过；完整 provenance / recovery 继续保持公开边界 |
 | F-04 | M0.4 已拆分显式 init / migrate / bootstrap permission；默认 doctor 只读，serve current-only | remote backup / scheduled backup / production DR 仍不属于本地 SQLite 合同 | M0.4 已收口；后续 schema 变更继续复用 ledger / backup / rehearsal / transaction / readback 门 |
 | F-05 | M0.4 已为 legacy rebuild 建立 schema version、migration ledger、备份/恢复演练与显式事务 | 本地 SQLite 合同已收口；remote/scheduled/production DR 仍不存在 | 后续 schema 变更必须复用同一迁移与恢复门禁 |
-| F-06 | M1.1.1 / M1.1.2 / M1.1.3 / M1.1.4 / M1.1.5 / M1.1.6 已提供 scoped Event / Claim / Episode / Reflection search、scoped evidence-relation runtime 与稳定跨类型 union；M1.2.1 / M1.2.2 / M1.2.4 / M1.2.5 增加 Event/Claim/Episode/Reflection stable-ID lookup；M1.2.3 / M1.2.6 增加 Claim-linked reflection history 与 scoped identity/commitment revision audit 首片；M1.2.7 增加 scoped Claim audited supersede 首片；M1.0.1–M1.0.3 前置门已通过 | 四类 search、union、四类 lookup、Claim revision chain、self-model audit history、evidence-relation runtime 与 scoped supersede 可用，但 versioned identity/commitment ledger 仍缺；record-only Reflection 仍因无 scope 不可读 | 继续按 M1 建设 Read Model v2；下一片为 M1.3.0 |
+| F-06 | M1.1.1 / M1.1.2 / M1.1.3 / M1.1.4 / M1.1.5 / M1.1.6 已提供 scoped Event / Claim / Episode / Reflection search、scoped evidence-relation runtime 与稳定跨类型 union；M1.2.1 / M1.2.2 / M1.2.4 / M1.2.5 增加 Event/Claim/Episode/Reflection stable-ID lookup；M1.2.3 / M1.2.6 增加 Claim-linked reflection history 与 scoped identity/commitment revision audit 首片；M1.2.7 增加 scoped Claim audited supersede 首片；M1.0.1–M1.0.3 前置门已通过 | 四类 search、union、四类 lookup、Claim revision chain、self-model audit history、evidence-relation runtime 与 scoped supersede 可用，但 versioned identity/commitment ledger 仍缺；schema v6 已提供安全独立归属的 record-only history，unknown/mixed 历史继续隔离 | 继续按 M1 建设 Read Model v2；M1.3.0 与 M2.0.1 已完成；继续有界可用性候选验证 |
 | F-07 | Dashboard 仍无认证，但启用时已拒绝非 loopback host | 本地只读口径已有强制边界；remote dashboard 仍未授权 | M0.5 已收口；保持 loopback-only，认证与 remote 另走独立 gate |
 | F-08 | Linux/macOS CI 与 CLI stderr tracing 已建立；真实二进制包尚未建立 | source gate 已持续化，artifact delivery 仍不完整 | M0.5 已收口；M2 补真实包 |
 | F-09 | evidence / episode / memory layer projection 主要停留在定义和测试调用 | 测试存在被误读为运行时产品能力 | 未接入前标记 partial / experimental |
@@ -142,6 +193,25 @@ M0 先冻结以下概念，不立即重做所有表：
 | **Not scheduled — M4 Remote and Autonomy** | remote/team、write-capable daemon、full autonomy | 不排期 | 有真实需求且安全前置门全部满足 |
 
 预计节奏只用于排序，不是发布日期承诺。
+
+### 2026-10-09 早期有界可用性候选执行批次（e14a59e 历史记录；后续原方案续建见页首）
+
+最新已核验上游基线为 `dev-work@c318caf`，已包含 stdio bootstrap 回归修复；9 月 5 日讨论稿只作为设计输入，不作为已实现或已验证证据。本批次在现有 M1 → M2 主线内收束一个 **local-first technical MVP 可用性候选**，不宣告 Local Alpha 发布。
+
+依赖调整：将 M2.0.1 生命周期排他性与 M1.3.0 一起作为所有 schema 变更的前置门；把 M3 中最小中英文文本召回和有界任务上下文前移为 M1 用户闭环所需的实用性切片。FTS/embedding/ranking 调优、50 场景全面评测仍留在 M3。
+
+| 批次阶段 | 有界交付 | 验收与停止条件 |
+| --- | --- | --- |
+| 0 基线与范围 | 重拉上游、保留既有修复、更新唯一队列 | 新 head 与差异已核验；独立开发分支、单一草稿 PR；不合并或部署 |
+| 1 数据库前置门 | M1.3.0 结构读回 + M2.0.1 安全生命周期 | 同版本弱化约束 fail closed；只读检查不改库；并发 init/migrate 不破坏他人数据；迁移失败保留原库与恢复锚点 |
+| 2 可靠更正与重试 | 事务内 scope/evidence/state 校验、单后继更正、持久化幂等及原子写入回执 | active/disputed 可更正，terminal 拒绝；相同 key/payload 返回原结果，不同 payload 冲突；失败无部分 claim/evidence/audit；直接 reflection 同样受约束 |
+| 3 外部反馈 provenance | 有界结构化观察，保留来源、目标、预期/实际、验证方法与限制 | 原始观察不可改写；caller/tool/model 声明可区分但不视为认证；跨 scope 证据拒绝；不增加执行权限 |
+| 4 本地召回与任务上下文 | additive 文本 recall 与独立有界 context，不改变历史 browse | 北京/咖啡/记忆及英文、字面符号可召回；active claim 不被事件淹没；固定离线小样本 recall@5 ≥ 0.80、provenance 100%、scope 泄漏 0；完整 JSON UTF-8 字节数不超过请求预算 |
+| 5 可重现交付候选 | init → MCP 写入 → 重启 → 检索 → evidence → 更正 → history → backup/restore | 实际进程 stdio transcript 与读回证据、full/fmt/Clippy/status-sync、精确远端提交与 CI；平台实测和 fresh-machine 尚未完成项继续明确标注 |
+
+每阶段先 focused 回归，再相应全量门禁；代码、能力边界和测试文档同阶段更新。每个通过阶段发布到 `CeauYoo:dev_work_dots` 并更新指向上游 `dev-work` 的同一草稿 PR。不得用历史 CI、文档或模拟环境替代当前检查，不调用付费/远程模型作默认验收。
+
+本批次结束条件是上述有界本地工作流与声明的平台证据可复现、候选可 review；正式二进制跨平台发布、真实 fresh-machine ≤10 分钟、live-provider 认证、人工 release decision 未取得证据时保持开放。强制 embeddings、云服务、远程/团队、自治控制器、广泛重构和完整 procedural memory 不在本批次范围内。
 
 ## 6. M0 — Truth and Safety Reset
 
@@ -315,7 +385,7 @@ M0 已收口，当前只能从 M1 领取一个独立最小切片。新 provider�
 - 已完成（2026-08-13）：两个及以上类型组成 scoped union：分别按同一 scope 与 `1..=100` limit 读取，再按 `recorded_at DESC`（Claim 无 timestamp 排在最后）、type rank（Event / Episode / Reflection / Claim）、id DESC 稳定收口并截断。union 拒绝所有类型专属 filter；Claim 在 union 中仍默认 Active。既有 tagged record JSON 不变。Episode lookup 由后续 M1.2.4 单独完成；Reflection `get_memory` 仍开放。
 - 该项没有 schema migration / index，也不开放 Episode/Reflection lookup、identity/commitment history 或 correction。
 
-- 已完成四类 scoped search、evidence-relation runtime、跨类型 union、Episode / Reflection lookup、identity/commitment revision audit 与 audited supersede 首片；下一步按冻结顺序领取 M1.3.0 current-schema structural readback。
+- 已完成四类 scoped search、evidence-relation runtime、跨类型 union、Episode / Reflection lookup、identity/commitment revision audit 与 audited supersede 首片；结构读回与生命周期排他性已完成；按 2026-10-09 有界批次继续。
 - 查询结果保留 ID、namespace、owner、recorded_at、status、mode、provenance 和 supersession 状态。
 - SQLite 增加经过 explain/benchmark 证明需要的索引；不先假设 FTS 或向量数据库。
 
@@ -365,9 +435,20 @@ M0 已收口，当前只能从 M1 领取一个独立最小切片。新 provider�
 
 现有 `ingest_interaction` 保持兼容。MCP Resources 只在上述查询契约稳定后评估，且必须复用同一 read service。
 
+### M1.2.8–M1.2.11 有界可用性补全
+
+- [x] **M1.2.8 Transactional Corrections and Durable Replay** — 事务内 scope/evidence/state CAS，operation+namespace+request_id 作用域的 hash/result 原子回执；相同typed payload重放，不同payload冲突；replay不重复auto-reflection。scoped supersede不修改全局identity/commitments。legacy direct/auto全局self-model治理保持experimental边界。
+- [x] **M1.2.9 Structured Feedback Provenance** — 有界caller/tool/model来源声明、producer、target/version、expected/actual、verification与limitations；同scope证据事务内验证；schema v4显式迁移。来源标签不是认证或真实性证明。
+- [x] **M1.2.10 Offline Bilingual Literal Recall** — additive recall_memory针对active Claim与Event的scope-first literal OR substring查询；短CJK可用、ASCII大小写折叠、Claim优先、完整provenance；现有search_memory历史浏览不变。小型固定离线fixture，不声称全面M3检索质量或大库性能。
+- [x] **M1.2.11 Byte-Bounded Task Context** — build_task_context保留完整record/provenance，完整compact结果JSON UTF-8硬字节预算，包含metadata/自身size；不计JSON-RPC包装、不等于token上限；过大record跳过并返回omission说明。
+
+行为、兼容变化、验证命令和保留的legacy风险详见[可用性合同](../local-memory-usability.md)。四片共享事务、读模型与MCP接口，在同一集成提交验证发布；不代表正式Local Alpha gate完成。
+
 ### M1.3 用户闭环
 
-- [ ] **M1.3.0 Current-Schema Structural Readback Gate** — 在任何 schema-changing M1 slice 和真实客户端退出门前，使用 `table_info`、`foreign_key_list`、index/DDL fingerprint 等验证关键结构；同版本但约束被削弱的数据库不得报告 `current`。无 schema/index 的纯只读 slice 不由此单独阻塞。
+2026-10-09：M1.3.0 / M2.0.1 已实现。只读检查在一致 SQLite read transaction 中对照 canonical schema 的 DDL、columns、FK 与 indexes；结构弱化返回 `schema_structure_invalid`。init 使用原子 `create_new`，失败不删除库/sidecar；migrate 在 backup/rehearsal/write 全程持有 SQLite write reservation。异常 init 文件保留供诊断，需要人工确认后处理，不自动重试覆盖。
+
+- [x] **M1.3.0 Current-Schema Structural Readback Gate** — 在任何 schema-changing M1 slice 和真实客户端退出门前，使用 `table_info`、`foreign_key_list`、index/DDL fingerprint 等验证关键结构；同版本但约束被削弱的数据库不得报告 `current`。无 schema/index 的纯只读 slice 不由此单独阻塞。
 - [ ] **M1.3.1 Real Client Recall and Correction Closure** — 仅在 scope/data-integrity、read/history/correction 与 current-schema structural readback 合同完成后执行真实 MCP 客户端故事，并保存 transcript、SQLite readback 与零 scope 泄漏证据。
 
 标准验收故事：
@@ -383,7 +464,7 @@ M1 退出门：该故事由真实本地客户端完成，并保存 MCP transcrip
 
 ## 8. M2 — Local Product Alpha
 
-- [ ] **M2.0.1 Exclusive Init-and-Migration Lifecycle Gate** — init 清理只处理本次操作确定创建的文件；init/migrate 需排他执行或明确拒绝并发，moving-target 检测不能只比较版本与行数。若任何 M1 任务提前引入 migration，则相应排他性门禁同步前移。
+- [x] **M2.0.1 Exclusive Init-and-Migration Lifecycle Gate** — init 清理只处理本次操作确定创建的文件；init/migrate 需排他执行或明确拒绝并发，moving-target 检测不能只比较版本与行数。若任何 M1 任务提前引入 migration，则相应排他性门禁同步前移。
 - 建立版本化 macOS binary archive 和 checksum；Local Alpha 不要求 installer、service manager 或 auto-updater。
 - quick start 不要求用户本机安装 Rust toolchain。
 - `init → doctor --read-only → serve → remember/search/inspect/correct` 在 fresh macOS 环境可按文档完成。
@@ -409,7 +490,7 @@ M2 退出指标：
 - 冻结至少 50 个 scoped recall 场景，再比较 structured query、FTS5、recency、relation weight 等方案。
 - 初始质量目标为 recall@5 ≥ 0.80、provenance coverage = 100%、namespace leakage = 0；若基线差异较大，先记录基线再批准目标调整。
 - 增加 tombstone、retention、compaction、export 和恢复验证，不直接 hard delete 审计历史。
-- identity / commitment 引入版本、diff、effective time 和 rollback target。
+- identity / commitment 有界版本、来源安全 diff、记录边界 effective time 和显式补偿 rollback target 已由 schema7 独立切片实现；更广泛生命周期与权限策略另行决定。
 - evidence relation、episode summary 和 memory layer projection 要么接入正式 read path，要么删除或明确留在 labs。
 - automatic self-revision 只在可靠 trigger、scope、idempotency、rollback 和人工可解释性通过后扩张。
 
@@ -495,7 +576,7 @@ M2 退出指标：
 ### 第 3 周：Read Model v2
 
 - 已完成 Event / Claim `search_memory` 与 `get_memory` 首片，以及 scoped Episode / Reflection provenance `search_memory` 首片；
-- 已完成 exact scoped Claim revision history、scoped identity/commitment revision audit、evidence-relation runtime、跨类型 union、Episode / Reflection lookup 与 audited supersede 首片；继续完成 current-schema structural readback；
+- 已完成 exact scoped Claim revision history、scoped identity/commitment revision audit、evidence-relation runtime、跨类型 union、Episode / Reflection lookup 与 audited supersede 首片；current-schema structural readback 已完成；继续本页页首的数据模型与维护性切片；
 - 用两个 namespace 小样本验证。
 
 ### 第 4 周：真实客户端闭环
@@ -550,4 +631,4 @@ M2 退出指标：
 
 M0 已收口。仍属于后续路线图而非本轮完成声明的项目包括：repository-wide event-ID 统一、完整 recall contract、support bundle inventory、server-created snapshot handle、structured action validation、完整 policy arbitration、真实 binary package、fresh-machine 与 Windows runtime parity。本机私有 credential 轮换仍是用户侧动作，不纳入仓库提交。
 
-当前里程碑是 M1 Trustworthy Recall；M1.0 三项 Scope/Data-Integrity Gates、M1.1.1–M1.1.6 四类 scoped search / evidence-relation / 跨类型 union，以及 Event/Claim/Episode/Reflection lookup、Claim reflection history、identity/commitment revision audit 与 scoped Claim audited supersede 已完成。下一执行顺序冻结为 current-schema structural readback → real-client closure；每项仍须独立领取。M2 fresh-machine / packaging 前还必须完成 exclusive init/migration gate。remote、tasks、OAuth、daemon writes、provider 扩张和正式发布仍不因 M0 或这些已完成切片而获得授权。
+当前里程碑是 M1 Trustworthy Recall；M1.0 三项 Scope/Data-Integrity Gates、M1.1.1–M1.1.6 四类 scoped search / evidence-relation / 跨类型 union，以及 Event/Claim/Episode/Reflection lookup、Claim reflection history、identity/commitment revision audit 与 scoped Claim audited supersede 已完成。当前执行顺序以页首 schema-v6 数据模型/只读导出 → 独立模块拆分/上下文诊断为准；current-schema structural readback 与 exclusive init/migration 均已完成。真实用户客户端、fresh-machine / packaging 和人工 release decision 仍需要各自证据，不以协议模拟代替。remote、tasks、OAuth、daemon writes、provider 扩张和正式发布仍不因 M0 或这些已完成切片而获得授权。

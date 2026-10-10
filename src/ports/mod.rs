@@ -17,6 +17,8 @@ pub mod model_port;
 pub mod operation_log_store;
 pub mod reflection_store;
 pub mod trigger_ledger_store;
+pub mod write_receipt;
+pub use write_receipt::{StoredWriteReceipt, WriteReceiptRequest};
 
 pub use crate::domain::self_revision::{
     SelfRevisionCommitmentPatch, SelfRevisionIdentityPatch, SelfRevisionPatch,
@@ -43,6 +45,32 @@ pub use trigger_ledger_store::{StoredTriggerLedgerEntry, TriggerLedgerStatus, Tr
 
 #[async_trait]
 pub trait IngestTransaction {
+    async fn load_event_for_ingest(
+        &mut self,
+        _event_id: &str,
+    ) -> Result<Option<StoredEvent>, AppError> {
+        Err(AppError::Message(
+            "ingest transaction does not support evidence revalidation".into(),
+        ))
+    }
+    async fn load_write_receipt(
+        &mut self,
+        _operation_id: &str,
+    ) -> Result<Option<StoredWriteReceipt>, AppError> {
+        Err(AppError::Message(
+            "transaction does not support durable write receipts".into(),
+        ))
+    }
+    async fn append_write_receipt(
+        &mut self,
+        _request: &WriteReceiptRequest,
+        _receipt: StoredWriteReceipt,
+        _recorded_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), AppError> {
+        Err(AppError::Message(
+            "transaction does not support durable write receipts".into(),
+        ))
+    }
     async fn append_event(&mut self, event: StoredEvent) -> Result<(), AppError>;
     async fn record_event_in_episode(
         &mut self,
@@ -63,6 +91,108 @@ pub trait IngestTransactionRunner {
 
 #[async_trait]
 pub trait ReflectionTransaction {
+    /// Returns the current head only after verifying both current projections.
+    async fn load_current_self_model_version(
+        &mut self,
+    ) -> Result<crate::domain::self_model_version::SelfModelVersion, AppError> {
+        Err(AppError::Message(
+            "transaction does not support self-model versions".into(),
+        ))
+    }
+    async fn load_self_model_version(
+        &mut self,
+        _version: u64,
+    ) -> Result<Option<crate::domain::self_model_version::SelfModelVersion>, AppError> {
+        Err(AppError::Message(
+            "transaction does not support self-model versions".into(),
+        ))
+    }
+    async fn load_self_model_reflection(
+        &mut self,
+        _reflection_id: &str,
+    ) -> Result<Option<StoredReflection>, AppError> {
+        Err(AppError::Message(
+            "transaction does not support self-model provenance".into(),
+        ))
+    }
+    async fn append_self_model_version(
+        &mut self,
+        _expected_version: u64,
+        _version: crate::domain::self_model_version::SelfModelVersion,
+    ) -> Result<(), AppError> {
+        Err(AppError::Message(
+            "transaction does not support self-model versions".into(),
+        ))
+    }
+    async fn load_feedback_candidate(
+        &mut self,
+        _namespace: &crate::domain::types::Namespace,
+        _candidate_id: &str,
+    ) -> Result<Option<crate::domain::feedback_candidate::FeedbackCandidate>, AppError> {
+        Err(AppError::Message(
+            "transaction does not support feedback candidates".into(),
+        ))
+    }
+    async fn list_feedback_candidates_for_target(
+        &mut self,
+        _namespace: &crate::domain::types::Namespace,
+        _target: &str,
+        _version: &str,
+    ) -> Result<Vec<crate::domain::feedback_candidate::FeedbackCandidate>, AppError> {
+        Err(AppError::Message(
+            "transaction does not support feedback candidates".into(),
+        ))
+    }
+    async fn insert_feedback_candidate(
+        &mut self,
+        _candidate: &crate::domain::feedback_candidate::FeedbackCandidate,
+    ) -> Result<(), AppError> {
+        Err(AppError::Message(
+            "transaction does not support feedback candidates".into(),
+        ))
+    }
+    async fn update_feedback_candidate(
+        &mut self,
+        _candidate: &crate::domain::feedback_candidate::FeedbackCandidate,
+        _expected_revision: u64,
+    ) -> Result<(), AppError> {
+        Err(AppError::Message(
+            "transaction does not support feedback candidates".into(),
+        ))
+    }
+    async fn load_write_receipt(
+        &mut self,
+        _operation_id: &str,
+    ) -> Result<Option<StoredWriteReceipt>, AppError> {
+        Err(AppError::Message(
+            "transaction does not support durable write receipts".into(),
+        ))
+    }
+    async fn append_write_receipt(
+        &mut self,
+        _request: &WriteReceiptRequest,
+        _receipt: StoredWriteReceipt,
+        _recorded_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), AppError> {
+        Err(AppError::Message(
+            "transaction does not support durable write receipts".into(),
+        ))
+    }
+    /// Reads and conditional transitions must use the same transaction as reflection writes.
+    async fn load_claim_for_reflection(
+        &mut self,
+        claim_id: &str,
+    ) -> Result<Option<StoredClaim>, AppError>;
+    async fn load_event_for_reflection(
+        &mut self,
+        event_id: &str,
+    ) -> Result<Option<StoredEvent>, AppError>;
+    async fn compare_and_set_claim_status(
+        &mut self,
+        claim_id: &str,
+        expected: ClaimStatus,
+        status: ClaimStatus,
+    ) -> Result<(), AppError>;
     async fn upsert_claim(&mut self, claim: StoredClaim) -> Result<(), AppError>;
     async fn link_evidence(&mut self, claim_id: String, event_id: String) -> Result<(), AppError>;
     async fn append_reflection(&mut self, reflection: StoredReflection) -> Result<(), AppError>;
@@ -108,3 +238,12 @@ pub trait ReflectionTransactionRunner {
         &self,
     ) -> Result<Box<dyn ReflectionTransaction + Send + '_>, AppError>;
 }
+
+pub mod text_memory_store;
+
+pub mod experience_store;
+pub mod feedback_candidate_store;
+
+pub mod ledger_export_store;
+
+pub mod self_model_version_store;

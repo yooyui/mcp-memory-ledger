@@ -1,5 +1,7 @@
 # Windows 开发与接入指南
 
+2026-10-09 文档导航：首次使用见[快速开始](quickstart.md)，当前操作见[数据库手册](database-operations.md)，可执行协议示例见[完整工作流](runnable-memory-workflow.md)。实现基线三平台验证与 Windows native / wrapper 区别见[当前状态](project-status.md)；下方分阶段追加记录不代表新的发布批准。
+
 这份文档面向在 Windows 上开发、验证和接入 `agent_llm_mm` 的协作者。
 
 ## 1. 环境前提
@@ -7,6 +9,7 @@
 - 已安装 `rustup`；仓库声明 Rust `1.95.0`、`rustfmt` 与 `clippy`，但该声明本身不构成 Windows runtime parity 证据
 - `cargo` 可用
 - 已安装 PowerShell 7
+- 运行 wrapper 回归验证时需 Python 3；验证脚本只使用标准库
 - 当前仓库内提供 Windows 入口脚本：
   - `pwsh -File .\scripts\agent-llm-mm.ps1 bootstrap-local`
   - `pwsh -File .\scripts\agent-llm-mm.ps1 init`
@@ -38,6 +41,8 @@ pwsh -File .\scripts\agent-llm-mm.ps1 bootstrap-local .\agent-llm-mm.local.toml
 
 显式目标路径可以是绝对路径或相对路径；相对路径按仓库根目录解析，不按调用者当前目录解析。跨目录调用脚本时建议传绝对路径，避免把配置写到非预期位置。
 
+PowerShell wrapper 将路径作为字面量处理，支持空格、方括号、单引号和中文文件名。显式 `config_path` 优先于继承的 `AGENT_LLM_MM_CONFIG`；没有显式路径时保留继承配置，`AGENT_LLM_MM_DATABASE_URL` 仍按应用配置规则覆盖数据库位置。通过 `&` 从已有 PowerShell 会话调用时，wrapper 结束后恢复调用者目录和原有 `AGENT_LLM_MM_CONFIG`，不修改 `PATH`。未知模式、doctor 选项或多余参数返回 2；底层 Cargo / 应用失败保留非零退出码。
+
 如果目标配置已存在，脚本会拒绝覆盖；这种情况下请手工编辑已有文件，或先选择一个新的目标路径。也可以继续手工选择 profile 并复制为本机配置：
 
 ```powershell
@@ -54,8 +59,8 @@ Copy-Item .\examples\agent-llm-mm.dev.example.toml .\agent-llm-mm.local.toml
 `examples/agent-llm-mm.example.toml` 只是通用入口说明，不再承载所有用途。然后编辑 `agent-llm-mm.local.toml`：
 
 - 固定自己的 `database_url`
-- 选择 `provider`
-- dev/mock profile 不需要 API key；选择 `openai-compatible`、`openrouter` 或 prod-local profile 时，才在已忽略的 `agent-llm-mm.local.toml` 里填写 `base_url`、`model`，并二选一配置本机私有 `api_key` 或 `api_key_env`
+- 选择 `provider`；原生 Responses / Messages 的 TOML 段、密钥环境变量和非流式边界见[快速开始](quickstart.md#5-可选原生模型配置)。这些配置无需 live 调用即可用 doctor 检查，离线检查不构成 live certification。
+- dev/mock profile 不需要 API key；选择 `openai-compatible`、`openrouter`、`openai-responses`、`anthropic` 或 prod-local profile 时，才在已忽略的 `agent-llm-mm.local.toml` 里填写 `base_url`、`model`，并二选一配置本机私有 `api_key` 或 `api_key_env`
 
 常见 Windows SQLite URL 示例；dev、demo、prod-local 必须使用不同文件。按数据生命周期口径，`prod-local` 对应 formal 数据，`dev` / manual profile 对应 test 数据，demo profile 只对应 demo 数据：
 
@@ -116,6 +121,7 @@ cargo fmt --check
 git diff --check
 cargo clippy --all-targets -- -D warnings
 cargo test
+python .\scripts\test-windows-wrapper.py
 pwsh -File .\scripts\agent-llm-mm.ps1 doctor --read-only
 ```
 
@@ -126,7 +132,9 @@ PowerShell 环境使用上面的等价 Cargo 命令。
 
 发布前请按 [Release Gate](release-gate.md) 跑完整 gate；本节只是 Windows 日常验证入口。Release gate 中的 `./scripts/agent-llm-mm.sh doctor` 在 Windows 上对应 `pwsh -File .\scripts\agent-llm-mm.ps1 doctor`。
 如果判断 Local Product Alpha / product alpha 口径，还必须改用 [Local Alpha Release Gate](product/release-gate-local-alpha.md)；普通 `doctor` 通过不等于 Local Alpha 完成。
-当前 macOS 本机验证环境没有 `pwsh`，所以 PowerShell `bootstrap-local` 行为需要 Windows runner 或 Windows 实机补充 runtime parity 证据；Rust bootstrap 测试仍保留脚本文本契约和 no-clobber 静态断言。
+`scripts/test-windows-wrapper.py` 是 fail-closed 的 PowerShell 行为验证入口：默认要求 Windows、PowerShell 7 与 Cargo，缺失前提或任一断言失败均返回非零，不会静默跳过。它在独立临时目录内验证 default/absolute/relative `bootstrap-local`、字面量路径、不覆盖已有配置、缺失父目录与错误参数；通过真实 wrapper → Cargo → binary 验证只读 doctor、显式 init / legacy migrate / doctor bootstrap、配置和环境覆盖，以及默认/显式 serve 的 MCP 握手与 stdout JSON 纯净性。独立 native probe 同时验证 Cargo 参数转发、非零退出码和调用者环境/目录恢复。所有数据库均为临时 mock 数据，不触发付费模型调用。
+
+CI 应在 Windows runner 上单独执行该命令，并检查命令退出码。输出 summary 的 `windows_runtime_evidence` 只有 Windows 上全部通过时才为 true；配置了 workflow 或 Linux 静态检查通过都不是 Windows 实测证据。`--allow-non-windows` 仅允许在已安装 PowerShell 的其他平台做补充检查，不能关闭 Windows 门。Rust `tests/bootstrap.rs` 中的可选 `pwsh` 检查仍可能因工具缺失而跳过，不能替代此入口。该测试覆盖源码入口 wrapper，尚不证明完整 Windows 安装包、fresh-machine、长期运行或 Local Alpha 发布批准。
 当前 release soak runner 是 bash 脚本：`./scripts/release-soak-local.sh <candidate-name> [config_path]`。在 Windows 上请从 Git Bash、WSL 或等价 bash 环境运行；它只生成本机候选证据，不替代 Windows runner parity、真实 fresh-machine、安装包或发布认证证据。
 当前 provider certification preflight / live evidence runner 也是 bash 脚本：`./scripts/provider-certification-check.sh [config_path] [evidence_root] [output_dir]` 和 `./scripts/provider-live-certification-run.sh --live [config_path] [evidence_root]`。在 Windows 上请从 Git Bash、WSL 或等价 bash 环境运行；配置示例本身不是 live evidence，必须显式运行 `--live` runner 才能产生 preflight 可读取的 live evidence。`--live` runner 只写 provider preflight evidence files，记录本次配置下的 endpoint reachability、decision probe、self-revision parse probe、错误处理和 redaction review provenance；即便 preflight 显示 `live_certified = true`，也只表示 config preflight 通过且四类 live evidence present，不证明 provider 输出质量、SLA、provider gateway、Local Alpha、Beta、GA、production-ready、production readiness 或 release approval。`--stub-evidence` 只生成本地模拟证据，不能让 `live_certified = true`。
 
@@ -164,3 +172,38 @@ PowerShell 环境使用上面的等价 Cargo 命令。
 - 正式数据、手工测试数据和 demo 数据必须分开使用不同数据库文件；prod-local 只用于要保留、检查或备份的本地正式数据。
 - 如果多个本机客户端共用同一 SQLite 文件，需要预期 SQLite 单写者模型带来的锁等待和状态互相影响。
 - 所有示例 profile 都保持 `[daemon].enabled = false`；后续 daemon 观察模式必须走单独 gate。
+
+## 2026-10-09 schema-v5 feedback and experience verification
+
+The [A–E runtime guide](memory-feedback-experience.md) describes explicit migration, read-only index inspection/rebuild and new MCP tools. Existing v4 databases require explicit `migrate` before serving; keep the generated backup and restore to a new path. New deterministic checks are `cargo test --test feedback_candidates --test experience_workflow --test indexed_text_recall --test sqlite_lifecycle`. The Python evaluation/capacity scripts accept an existing binary and never require paid model calls; see [methodology](evaluation-methodology.md). Use `python3` on macOS and `python` on Windows, with the native binary suffix. Exact-head platform evidence remains distinct from configured workflows and from formal fresh-machine/release gates.
+
+The evaluation fixtures are UTF-8 even on a Windows installation whose default text code page is cp1252. Fixture loaders specify UTF-8 explicitly; the Python unit suite includes a forced-cp1252 regression. Do not work around a decoding failure by skipping Chinese fixtures or relaxing expected results. The initial v5 Windows CI passed all 184 native Rust tests and the complete feedback/experience workflow before exposing this fixture-test decoding issue; verification must be rerun against the encoding-fix commit.
+
+## Schema v6 temporal/scope/export
+
+Run explicit `migrate` for an existing v5 database; inspect the generated backup and restore only to a new path. [Temporal fields](temporal-metadata.md) keep unknown historical Claim times null and preserve raw timestamps; [Reflection scope](reflection-scope-history.md) never turns effect scope into read authority. [Export](scoped-export.md) is bounded readonly interchange, not a replacement for backup. Verify with `cargo test --test temporal_metadata --test sqlite_temporal_store --test reflection_scope_history --test scoped_ledger_export --test schema6_migration` and `scripts/temporal-scope-export-smoke.py` using the platform's Python and binary path. Rust lifecycle/format/full gates remain required.
+
+
+### Final original-plan context and caller-budget regression
+
+`cargo test --test context_diagnostics --test caller_operation_budget --test mcp_stdio --test schema6_migration` covers scoped rich Episode context, honest bounded diagnostics, optional caller counts/stops over actual local MCP subprocesses, and historical receipt/fingerprint replay across migration. Run the normal full/fmt/Clippy/status-sync gates afterward. The fixed offline evaluator keeps its original tasks and byte budgets; richer metadata costs must be reported rather than hidden by retuning fixtures. See [context](context-diagnostics.md), [caller budget](caller-operation-budget.md), and [module extraction](implementation-module-boundaries.md) contracts.
+
+## Schema v7 global self-model versions
+
+Use explicit `migrate` for older databases, including v6; retain its backup anchor and restore only to a new path. Migration captures current projections as baseline0 with unknown historical effective time. `serve` and index repair never seed or repair the version ledger. See [version contract](self-model-versions.md) and [database operations](database-operations.md). Run `cargo test --test schema7_migration --test self_model_versions --test version_api` and the full/fmt/Clippy/status-sync gates against this source; prior schema6 counts remain historical. Versioned writes and reads reject projection drift. Local deterministic tests are not actual user-client or fresh-machine evidence.
+
+Windows native CI explicitly includes `schema7_migration`, `self_model_versions`, `version_api` and the MCP subprocess version workflow. Their presence is a verification route, not a claim of a completed Windows run for an unpublished working tree. Existing exact-source portable build and PowerShell wrapper checks remain separate.
+
+## Wrapper 与离线验证的 Windows 细节
+
+Wrapper 按原始有序参数解析 `doctor --read-only [config]` 与
+`doctor --allow-bootstrap [config]`，避免 PowerShell 命名参数绑定吞掉 GNU 风格开关。
+测试使用真正的本机子进程检查 Cargo 的 `--` 分隔符、工作目录、环境恢复和退出码；
+PowerShell 函数替身不能准确模拟原生参数透传。PATH 恢复检查以 PowerShell 会话
+启动后、调用 wrapper 前的值为基线；PowerShell 自身启动时可能加入其安装目录，
+不能把这项启动行为误判为 wrapper 修改了调用者环境。
+
+Python 的 SQLite 连接上下文只管理事务，不负责关闭连接。包验证、容量探针和离线
+工作流显式关闭连接，包括异常路径，避免 Windows 临时目录删除时出现 WinError 32。
+CI 将各项 Python 验证拆成独立步骤；任何失败都会使该 job 失败，不会被后续成功命令掩盖。
+是否已通过仍须查看当前精确提交的 Windows CI，不以脚本存在或其他平台通过代替。

@@ -1,5 +1,32 @@
 # Self-Agent MCP 测试指南（2026-03-24，按 2026-07-15 fresh 验证更新）
 
+2026-10-09 文档导航：首次使用见[快速开始](quickstart.md)，当前操作见[数据库手册](database-operations.md)，可执行协议示例见[完整工作流](runnable-memory-workflow.md)。实现基线三平台验证与 Windows native / wrapper 区别见[当前状态](project-status.md)；下方分阶段追加记录不代表新的发布批准。
+
+## 2026-10-10 原生 Responses / Messages 验证
+
+原生 `openai-responses` 和 `anthropic` 使用本地 HTTP fixture 验证，不要求真实账号，不访问付费 API。应同时保留原有 Chat Completions / OpenRouter 回归。
+
+```sh
+cargo test --test provider_config --test openai_compatible_model --test native_model_protocols --test mcp_stdio
+cargo test --all-features
+cargo clippy --all-targets --all-features -- -D warnings
+cargo fmt --all -- --check
+./scripts/status-sync-check.sh
+git diff --check
+```
+
+全套测试包含原生适配器 request/response 单元与集成覆盖；检查原生 endpoint、headers、`store: false`、token budget、默认省略 temperature，以及 decision/self-revision 共享解析。错误覆盖应包含 timeout、非成功 status、畸形 JSON、空文本、拒绝、截断、不支持的工具响应、重定向及不泄漏 key/URL/body。实际 MCP stdio 测试验证 config-selected provider 及自动反思路径，不只测试独立 JSON helper。
+
+本节给出验证入口，不预先声明新总数或精确提交 CI 已通过。离线 fixture 与 doctor 通过都不是新增原生协议的 live 认证；现有 live runner 拒绝 native provider，preflight 对两者保持 `live_certified = false`；真实 endpoint、输出质量、同模型收益和费用实验仍需单独授权及证据。
+
+## 2026-10-10 portable package 与 wrapper 验证
+
+- `python scripts/test-windows-wrapper.py`：必须找到真实 PowerShell 与 Cargo，不允许缺失工具时跳过成功。CI 在 Windows runner 上执行；其他平台运行不代替 Windows 证据。
+- portable build 与无 Rust 解包测试、负向 fixture 命令见[本地包合同](portable-packages.md)。构建身份绑定精确 Git commit/tree，测试修改后的工作区须先形成可核对的提交快照。
+- CI 产物保留在 runner 本地；本阶段不上传包、不创建 release/tag、不替用户执行客户端验收。
+
+新增协议也通过 `cargo test --test mcp_stdio native_providers` 检查真实子进程配置选择与自动反思门。Windows CI 显式执行 native_model_protocols、openai_compatible_model 与 provider_config；Linux/macOS full gate 包含全部。
+
 ## 1. 目标
 
 这份文档说明当前仓库应如何测试，覆盖：
@@ -28,7 +55,7 @@
 
 ## 2. 当前测试分层
 
-测试数量不再作为文档状态源。固定入口按反馈成本分为三级：
+测试数量不作为独立的文档状态源；[当前状态](project-status.md)只保留绑定精确提交的已验证数量，不让历史数字代替新 head 检查。固定入口按反馈成本分为三级：
 
 | 层级 | 命令 | 使用场景 | feature 边界 |
 | --- | --- | --- | --- |
@@ -38,7 +65,7 @@
 
 `release-tools` 包含 Local Alpha evidence、release decision、product readiness、
 provider certification 和 packaging 相关模块、二进制与测试；这些资产没有删除，
-只是退出默认开发循环。测试文件增长时不再把精确总数复制到 README / 状态文档。
+只是退出默认开发循环。测试文件增长时不要机械更新多份“当前总数”；将带提交的证据集中到状态页。
 
 所有 13 个 bin target 都没有内部单元测试，因此关闭了 Cargo 的空 bin test harness；
 需要真实进程的 E2E 仍通过 `CARGO_BIN_EXE_*` 启动实际二进制并保留在对应集成测试中。
@@ -1544,3 +1571,60 @@ AGENT_LLM_MM_DATABASE_URL=sqlite:///private/tmp/agent-llm-mm-doctor.sqlite ./scr
 - 当前 active plan 与 reality gate 同步，且根目录没有误回流的 `not-a-sqlite-url` SQLite 文件
 - `namespace`、SQLite migration、MCP `stdio`、reflection 闭环和 automatic self-revision MVP 基线都可继续追加定向验证
 - 本机运行时 bootstrap 正常
+
+## 2026-10-09 database prerequisite regressions
+
+Run `cargo test --test sqlite_lifecycle` for canonical structural readback, weakened same-version columns/keys/FKs/CHECK/index rejection, v2-to-current migration, concurrent init, pre-existing sidecar preservation, and external same-count writers including WAL. Default doctor stays read-only. Failed init deliberately retains the reserved database for diagnosis; inspect before manual cleanup. `schema_structure_invalid` is not automatically repaired. Full source gates remain required before publishing a completed implementation stage.
+
+## Bounded usability candidate regressions
+
+- `cargo test --test correction_atomicity --test feedback_provenance`: transaction target/state/scope revalidation, concurrent replay/supersession, receipt-insert rollback, schema-v4 migration, typed feedback and same-scope evidence.
+- `cargo test --lib`: fixed bilingual literal-query fixtures, active-claim priority under event floods, scope/provenance checks, query limits, and exact UTF-8 context-budget sweeps. This small deterministic fixture is not a public/model-judged benchmark or large-corpus latency result.
+- `python3 scripts/local-memory-smoke.py --binary target/debug/agent_llm_mm --output target/reports/local-memory-smoke`: actual stdio installed-copy restart/correction/history/restore story; requires an empty output directory. Windows uses `python` and `.exe`. No remote model call.
+- Full/fmt/all-feature Clippy/status-sync remain mandatory. Windows native CI is a defined subset, not proof of shell-wrapper parity or a published installer. See [workflow contract](local-memory-usability.md).
+
+### Migration reader-lock regression
+
+`migration_waits_for_existing_reader_before_commit` deterministically reproduced SQLITE_BUSY before the fix. Migration admission still fails fast when another writer owns the database; after its own reservation, SQLite waits at most five seconds for transient reader locks so rollback-journal COMMIT can complete. DELETE/WAL writer-resumption tests remain enabled on Windows. Exhausting the bound returns an error and preserves the backup rather than silently retrying or deleting data.
+
+## Original-plan continuation regressions (schema v5)
+
+- `cargo test --test feedback_candidates --test correction_atomicity`: target-content version conflict, evidence support alignment, model/inconclusive/missing rejection, candidate immutability, no-new-evidence stop, commit/reject races and all-or-nothing receipts/history.
+- `cargo test --test experience_workflow`: same-scope source links, expected_version race, inspect/reject/activation, immutable versions and pending rollback, complete JSON-byte budget, no authority mutation, recovery.
+- `cargo test --test indexed_text_recall --test sqlite_lifecycle --test feedback_provenance`: explicit v0/v2/v3/v4→v5 migration, canonical readback, original-record preservation and restore rehearsal; FTS/CJK/punctuation/legacy IDs, trigger synchronization, missing/corrupt index detection and explicit rebuild, VACUUM/restore.
+- `python3 scripts/evaluate-memory-loop.py --help` and `python3 scripts/benchmark-memory-capacity.py --help`: fixed offline mechanism comparisons, ablations and reproducible capacity/query-plan reports. Read [methodology](evaluation-methodology.md); proxy success is not real LLM success, bytes are not tokens, and query variants are not independent tasks.
+- Final verification also requires fmt, all-target/all-feature Clippy, full test tier, status-sync and exact-head platform CI. Historical v4 counts above are not reused as v5 results.
+
+Windows fixture portability: `python -m unittest discover -s tests/fixtures/memory-evaluation -p "test_*.py"` also forces a cp1252 default decoder in a regression and requires both multilingual JSON fixtures to retain their UTF-8 content. Earlier archived two-test metric logs predate this additional encoding regression; they are historical evidence, not its result.
+
+## Schema v6 temporal, scope and export regressions
+
+- `cargo test --test temporal_metadata --test sqlite_temporal_store`: distinct caller observation/application recording time, historical null, old receipt/fingerprint compatibility, replay immutability, nanosecond/extreme-offset/leap-second ordering, union prelimit and standalone compatibility, real range-index query plans.
+- `cargo test --test reflection_scope_history --test scoped_ledger_export --test schema6_migration`: independent source/effect metadata, safe targetless history, normalized durable evidence FK/rollback, ambiguous-history quarantine, bounded snapshot export and no export diagnostics writes, real v5 migration/raw preservation/backup recovery.
+- `python3 scripts/temporal-scope-export-smoke.py --binary target/debug/agent_llm_mm --output target/reports/temporal-scope-export`: real provider-free stdio timestamp/replay/history/export journey; use `python` and `.exe` on Windows. No real user database or remote model is used.
+
+Earlier schema-v5 570-test/evaluation artifacts remain historical. New-stage results must carry matching source/binary manifests and exact-head CI; do not transfer old performance numbers to the new schema.
+
+
+### Final original-plan context and caller-budget regression
+
+`cargo test --test context_diagnostics --test caller_operation_budget --test mcp_stdio --test schema6_migration` covers scoped rich Episode context, honest bounded diagnostics, optional caller counts/stops over actual local MCP subprocesses, and historical receipt/fingerprint replay across migration. Run the normal full/fmt/Clippy/status-sync gates afterward. The fixed offline evaluator keeps its original tasks and byte budgets; richer metadata costs must be reported rather than hidden by retuning fixtures. See [context](context-diagnostics.md), [caller budget](caller-operation-budget.md), and [module extraction](implementation-module-boundaries.md) contracts.
+
+## 2026-10-10 schema7 self-model version contract
+
+Run `cargo test --test schema7_migration --test self_model_versions --test version_api`, then `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --all-features`, `scripts/status-sync-check.sh`, and `git diff --check`. These tests target truthful init/migration baselines, immutable contiguous versions, no-op/global-only version writes, stale/CAS conflicts, source-safe selective rollback, unchanged legacy serialization, keyed replay/conflicts, transaction failure atomicity, drift rejection, one-snapshot scoped reads/diffs, structure weakening and backup/restore. Test fixture setup must establish its intended baseline deliberately; production never silently rebaselines unversioned low-level identity changes.
+
+Use a fresh isolated mock database for live MCP smoke: init, ingest two same-scope evidence/Claim anchors, write identity twice, read opted-in versions, compensate the selected component with a new durable request key and explicit evidence, replay, reject a stale version, and verify backup/restore readback. No model or remote account is necessary. Do not reuse historical schema6 metrics as evidence for new source. See [complete contract](self-model-versions.md).
+
+Schema7 的完整本地结果与最终 source/binary digest 见[阶段报告](plans/2026-10-10-schema7-results.md)。Doctor 的 memory-layer blocked 诊断仅阻止自动派生层写入，不否认现有 run_reflection 全局版本路径；发布诊断区分本地 portable build/CI configured hosts 与仍未完成的真实用户兼容和发布批准门。
+
+
+### Windows CI 的失败传播与资源清理
+
+离线 evaluator、Python fixture 和 temporal/export smoke 各占独立 Windows 步骤，
+保证任一原生命令非零退出都使 job 失败。Wrapper 参数检查使用本机探针，不使用会吞掉
+`--` 的 PowerShell 函数替身。SQLite 验证覆盖真实备份内容和成功/异常后的连接关闭；
+不得通过忽略临时目录删除错误让 Windows 检查“通过”。
+
+本轮修复后的 Python 基线为 13 项 evaluation fixture 和 40 项 portable-package 回归；
+历史提交的 9/33 项结果保留为历史证据，不用于替代当前 head 的 CI。

@@ -1077,8 +1077,17 @@ fn sqlite_owner_namespace_sql_rules_have_single_source() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let schema_source =
         std::fs::read_to_string(manifest_dir.join("src/adapters/sqlite/schema.rs")).unwrap();
-    let store_source =
+    let compatibility_source =
+        std::fs::read_to_string(manifest_dir.join("src/adapters/sqlite/store/schema_compat.rs"))
+            .unwrap();
+    let mut store_source =
         std::fs::read_to_string(manifest_dir.join("src/adapters/sqlite/store.rs")).unwrap();
+    for entry in std::fs::read_dir(manifest_dir.join("src/adapters/sqlite/store")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|extension| extension == "rs") {
+            store_source.push_str(&std::fs::read_to_string(path).unwrap());
+        }
+    }
 
     assert!(
         schema_source.contains("claims_table_sql("),
@@ -1089,12 +1098,12 @@ fn sqlite_owner_namespace_sql_rules_have_single_source() {
         "schema.rs should define the shared legacy namespace backfill expression"
     );
     assert!(
-        store_source.contains("claims_table_sql("),
-        "store.rs should use the shared claims table SQL builder"
+        compatibility_source.contains("claims_table_sql("),
+        "schema compatibility helpers should use the shared claims table SQL builder"
     );
     assert!(
-        store_source.contains("legacy_namespace_backfill_expression("),
-        "store.rs should use the shared legacy namespace backfill expression"
+        compatibility_source.contains("legacy_namespace_backfill_expression("),
+        "schema compatibility helpers should use the shared legacy namespace backfill expression"
     );
 
     for forbidden_fragment in [
@@ -1107,7 +1116,7 @@ fn sqlite_owner_namespace_sql_rules_have_single_source() {
     ] {
         assert!(
             !store_source.contains(forbidden_fragment),
-            "store.rs should not inline owner/namespace SQL fragment: {forbidden_fragment}"
+            "store modules should not inline owner/namespace SQL fragment: {forbidden_fragment}"
         );
     }
 }
@@ -1420,6 +1429,24 @@ async fn sqlite_reflection_transactions_replace_identity_and_commitments_atomica
         ]))
         .await
         .unwrap();
+
+    // Reflection evidence is now an FK-backed ledger relation. Seed real
+    // same-scope sources so this fixture continues to test transaction behavior.
+    for event_id in ["evt-reflection-1", "evt-reflection-3", "evt-reflection-9"] {
+        context
+            .store
+            .append_event(StoredEvent::new(
+                event_id.to_string(),
+                test_support::fixed_now(),
+                Event::new(
+                    Owner::Self_,
+                    EventKind::Reflection,
+                    "self-model update evidence",
+                ),
+            ))
+            .await
+            .unwrap();
+    }
 
     let mut ok_tx = context.store.begin_reflection_transaction().await.unwrap();
     let loaded_identity = ok_tx.load_identity().await.unwrap();
@@ -4031,6 +4058,7 @@ async fn sqlite_supersede_memory_is_scoped_claim_correction_and_hides_cross_scop
     let prepared = prepare_scoped_supersede(
         &context.store,
         &SupersedeMemoryInput {
+            request_id: None,
             namespace: project_a.clone(),
             claim_reference: ClaimReference::parse("claim:supersede-claim-a").unwrap(),
             replacement_claim: ClaimDraft::new_with_namespace(
@@ -4062,6 +4090,7 @@ async fn sqlite_supersede_memory_is_scoped_claim_correction_and_hides_cross_scop
     let cross_claim = prepare_scoped_supersede(
         &context.store,
         &SupersedeMemoryInput {
+            request_id: None,
             namespace: project_a.clone(),
             claim_reference: ClaimReference::parse("supersede-claim-b").unwrap(),
             replacement_claim: ClaimDraft::new_with_namespace(
@@ -4082,6 +4111,7 @@ async fn sqlite_supersede_memory_is_scoped_claim_correction_and_hides_cross_scop
     let cross_evidence = prepare_scoped_supersede(
         &context.store,
         &SupersedeMemoryInput {
+            request_id: None,
             namespace: project_a.clone(),
             claim_reference: ClaimReference::parse("supersede-claim-a").unwrap(),
             replacement_claim: ClaimDraft::new_with_namespace(
@@ -4102,6 +4132,7 @@ async fn sqlite_supersede_memory_is_scoped_claim_correction_and_hides_cross_scop
     let missing = prepare_scoped_supersede(
         &context.store,
         &SupersedeMemoryInput {
+            request_id: None,
             namespace: project_a.clone(),
             claim_reference: ClaimReference::parse("claim:missing").unwrap(),
             replacement_claim: ClaimDraft::new_with_namespace(
@@ -4120,6 +4151,7 @@ async fn sqlite_supersede_memory_is_scoped_claim_correction_and_hides_cross_scop
     assert!(matches!(missing, Err(AppError::InvalidParams(_))));
 
     let mismatched_replacement = SupersedeMemoryInput {
+        request_id: None,
         namespace: project_a,
         claim_reference: ClaimReference::parse("supersede-claim-a").unwrap(),
         replacement_claim: ClaimDraft::new_with_namespace(

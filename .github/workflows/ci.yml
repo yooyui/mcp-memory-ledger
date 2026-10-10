@@ -25,6 +25,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Verify pinned toolchain
         run: |
@@ -42,3 +44,68 @@ jobs:
 
       - name: Check plan and status synchronization
         run: ./scripts/status-sync-check.sh
+
+      - name: Verify installed-binary offline memory workflow
+        run: python3 scripts/local-memory-smoke.py --binary target/debug/agent_llm_mm --output target/reports/local-memory-smoke
+
+      - name: Verify feedback and experience proxy workflow
+        run: |
+          python3 scripts/evaluate-memory-loop.py --binary target/debug/agent_llm_mm --output target/reports/memory-evaluation
+          python3 -m unittest discover -s tests/fixtures/memory-evaluation -p 'test_*.py'
+          python3 scripts/temporal-scope-export-smoke.py --binary target/debug/agent_llm_mm --output target/reports/temporal-scope-export
+
+      - name: Test portable archive safety contracts
+        shell: bash
+        run: python -m unittest discover -s tests -p 'test_portable_package.py' -v
+
+      - name: Build exact-source portable archive and verify without Rust
+        shell: bash
+        run: |
+          python scripts/portable-package.py build --candidate local-mvp-ci-rc.1 --source-ref HEAD --output target/portable-package --target-dir target
+          shopt -s nullglob
+          archives=(target/portable-package/*.tar.gz target/portable-package/*.zip)
+          receipts=(target/portable-package/*.build.json)
+          test "${#archives[@]}" -eq 1
+          test "${#receipts[@]}" -eq 1
+          python scripts/portable-package.py verify --archive "${archives[0]}" --receipt "${receipts[0]}" --expected-commit "$(git rev-parse HEAD)" --expected-tree "$(git rev-parse 'HEAD^{tree}')" --output target/portable-package-verify
+
+  windows-runtime:
+    name: Windows native runtime / Rust 1.95.0
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify pinned toolchain
+        run: rustc --version --verbose
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Test native memory and lifecycle runtime
+        run: cargo test --lib --test sqlite_lifecycle --test sqlite_store --test correction_atomicity --test feedback_provenance --test feedback_candidates --test experience_workflow --test indexed_text_recall --test temporal_metadata --test sqlite_temporal_store --test reflection_scope_history --test scoped_ledger_export --test schema6_migration --test schema7_migration --test self_model_versions --test version_api --test context_diagnostics --test caller_operation_budget --test mcp_stdio --test native_model_protocols --test openai_compatible_model --test provider_config
+      - name: Verify installed-binary offline memory workflow
+        run: python scripts/local-memory-smoke.py --binary target/debug/agent_llm_mm.exe --output target/reports/local-memory-smoke
+      - name: Verify feedback and experience proxy workflow
+        run: python scripts/evaluate-memory-loop.py --binary target/debug/agent_llm_mm.exe --output target/reports/memory-evaluation
+      - name: Test offline evaluation fixtures
+        run: python -m unittest discover -s tests/fixtures/memory-evaluation -p "test_*.py"
+      - name: Verify temporal scope and export workflow
+        run: python scripts/temporal-scope-export-smoke.py --binary target/debug/agent_llm_mm.exe --output target/reports/temporal-scope-export
+
+      - name: Verify actual PowerShell wrapper behavior
+        run: python scripts/test-windows-wrapper.py
+
+      - name: Test portable archive safety contracts
+        shell: bash
+        run: python -m unittest discover -s tests -p 'test_portable_package.py' -v
+
+      - name: Build exact-source portable archive and verify without Rust
+        shell: bash
+        run: |
+          python scripts/portable-package.py build --candidate local-mvp-ci-rc.1 --source-ref HEAD --output target/portable-package --target-dir target
+          shopt -s nullglob
+          archives=(target/portable-package/*.tar.gz target/portable-package/*.zip)
+          receipts=(target/portable-package/*.build.json)
+          test "${#archives[@]}" -eq 1
+          test "${#receipts[@]}" -eq 1
+          python scripts/portable-package.py verify --archive "${archives[0]}" --receipt "${receipts[0]}" --expected-commit "$(git rev-parse HEAD)" --expected-tree "$(git rev-parse 'HEAD^{tree}')" --output target/portable-package-verify
