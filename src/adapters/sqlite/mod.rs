@@ -8,3 +8,20 @@ pub use lifecycle::{
     open_current_database, open_read_only_current_database,
 };
 pub use store::SqliteStore;
+
+mod text_recall;
+
+mod experience;
+mod feedback_candidate;
+mod retrieval_index;
+
+pub use retrieval_index::RetrievalIndexReport;
+
+mod reflection_scope;
+
+mod temporal_schema;
+
+mod ledger_export;
+
+mod self_model_version_reads;
+mod self_model_versions;

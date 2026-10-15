@@ -1,6 +1,4 @@
 use anyhow::Result;
-use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use rmcp::{
     ErrorData as McpError, ServerHandler, ServiceExt,
     handler::server::{router::tool::ToolRouter, tool::Parameters},
@@ -8,57 +6,34 @@ use rmcp::{
     tool, tool_handler, tool_router,
     transport::stdio,
 };
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 use tracing::{info, warn};
-use uuid::Uuid;
 
 use crate::{
-    adapters::{
-        model::{mock::MockModel, openai_compatible::OpenAiCompatibleModel},
-        sqlite::{SqliteStore, open_current_database},
-    },
+    adapters::sqlite::{SqliteStore, open_current_database},
     application::{
         auto_reflect_if_needed::{self, AutoReflectInput, RecursionGuard},
         build_self_snapshot,
         daemon::DaemonHandle,
         decide_with_snapshot, get_evidence_relation, get_memory, get_reflection_history,
-        get_self_model_history, ingest_interaction,
+        get_self_model_history, get_self_model_versions, ingest_interaction,
         ingest_interaction::IngestInput,
         run_reflection,
         run_reflection::ReflectionInput,
         search_memory, supersede_memory,
     },
-    domain::event::EventReference,
-    domain::identity_core::IdentityCore,
-    domain::operation_log::{ActorKind, OperationLogEntry, OperationLogKind, OperationLogStatus},
-    domain::self_revision::{
-        SELF_REVISION_DURABLE_WRITE_PATH, SelfRevisionProposal, SelfRevisionRequest, TriggerType,
-    },
-    domain::snapshot::SnapshotTimeWindow,
-    domain::types::MemoryScope,
+    domain::self_revision::SELF_REVISION_DURABLE_WRITE_PATH,
     error::AppError,
     interfaces::dashboard::{
         DashboardHandle, DashboardObserver, DashboardRuntimeInfo, OperationRecorder,
-        OperationStatus, start_dashboard_service_with_operation_log,
+        start_dashboard_service_with_operation_log,
     },
-    ports::{
-        ClaimReadRecord, ClaimRecordQuery, ClaimReflectionHistoryPage, ClaimReflectionHistoryQuery,
-        ClaimStatus, ClaimStore, Clock, CommitmentStore, EpisodeReadRecord, EpisodeRecordQuery,
-        EpisodeStore, EventReadRecord, EventRecordQuery, EventStore, EvidenceQuery, IdGenerator,
-        IdentityStore, IngestTransaction, IngestTransactionRunner, MemoryReadStore, ModelDecision,
-        ModelDecisionRequest, ModelPort, OperationLogStore, ReflectionReadRecord,
-        ReflectionRecordQuery, ReflectionStore, ReflectionTransaction, ReflectionTransactionRunner,
-        ScopedEventIdQuery, SelfModelHistoryPage, SelfModelHistoryQuery, StoredClaim, StoredEvent,
-        StoredReflection, StoredTriggerLedgerEntry, TriggerLedgerStatus, TriggerLedgerStore,
-    },
-    support::config::{AppConfig, ModelConfig, ModelProviderKind, TransportKind},
+    support::config::{AppConfig, ModelProviderKind, TransportKind},
 };
 
 use super::dto::{
     BuildSelfSnapshotParams, DecideWithSnapshotParams, GetEvidenceRelationParams, GetMemoryParams,
-    GetReflectionHistoryParams, GetSelfModelHistoryParams, IngestInteractionParams,
-    RunReflectionParams, SearchMemoryParams, SupersedeMemoryParams,
+    GetReflectionHistoryParams, GetSelfModelHistoryParams, GetSelfModelVersionsParams,
+    IngestInteractionParams, RunReflectionParams, SearchMemoryParams, SupersedeMemoryParams,
 };
 
 pub const AUTO_REFLECTION_RUNTIME_HOOKS: [&str; 4] = [
@@ -68,6 +43,18 @@ pub const AUTO_REFLECTION_RUNTIME_HOOKS: [&str; 4] = [
     "build_self_snapshot:periodic",
 ];
 pub const SELF_REVISION_WRITE_PATH: &str = SELF_REVISION_DURABLE_WRITE_PATH;
+
+mod caller_budget;
+mod diagnostics;
+mod runtime;
+mod transport;
+use runtime::Runtime;
+
+use diagnostics::{
+    ToolOperationRecord, log_auto_reflection_success, map_tool_error, runtime_hook_for,
+};
+
+use transport::{decode_tool_params, generated_mcp_correlation_id, structured};
 
 pub async fn run_stdio_server() -> Result<()> {
     let config = AppConfig::load().map_err(anyhow::Error::msg)?;
@@ -161,6 +148,8 @@ fn provider_label(provider: ModelProviderKind) -> &'static str {
         ModelProviderKind::Mock => "mock",
         ModelProviderKind::OpenAiCompatible => "openai-compatible",
         ModelProviderKind::OpenRouter => "openrouter",
+        ModelProviderKind::OpenAiResponses => "openai-responses",
+        ModelProviderKind::Anthropic => "anthropic",
     }
 }
 
@@ -228,49 +217,51 @@ impl Server {
             ingest_interaction::execute(&self.runtime, input).await,
         )
         .await?;
-        match auto_reflect_if_needed::execute(
-            &self.runtime,
-            auto_reflect_input.with_recursion_guard(RecursionGuard::Allow),
-        )
-        .await
-        {
-            Ok(diagnostics) => {
-                log_auto_reflection_success(
-                    runtime_hook,
-                    &diagnostics,
-                    Some(result.event_id.as_str()),
-                    &self.runtime.dashboard,
-                    dashboard_namespace.clone(),
-                    Some(correlation_id.clone()),
-                );
-                self.runtime
-                    .record_auto_reflection_operation(
-                        "ingest_interaction",
+        if !result.replayed {
+            match auto_reflect_if_needed::execute(
+                &self.runtime,
+                auto_reflect_input.with_recursion_guard(RecursionGuard::Allow),
+            )
+            .await
+            {
+                Ok(diagnostics) => {
+                    log_auto_reflection_success(
+                        runtime_hook,
                         &diagnostics,
+                        Some(result.event_id.as_str()),
+                        &self.runtime.dashboard,
                         dashboard_namespace.clone(),
                         Some(correlation_id.clone()),
-                    )
-                    .await;
-            }
-            Err(error) => {
-                warn!(
-                    runtime_hook,
-                    event_id = %result.event_id,
-                    trigger_type = ?auto_reflect_trigger_type,
-                    trigger_key = %auto_reflect_trigger_key,
-                    error = %error,
-                    "best-effort auto-reflection failed after successful ingest"
-                );
-                self.runtime
-                    .record_auto_reflection_failure_operation(
-                        "ingest_interaction",
-                        dashboard_namespace.clone(),
-                        Some(correlation_id.clone()),
-                        auto_reflect_trigger_type,
-                        &auto_reflect_trigger_key,
-                        &error,
-                    )
-                    .await;
+                    );
+                    self.runtime
+                        .record_auto_reflection_operation(
+                            "ingest_interaction",
+                            &diagnostics,
+                            dashboard_namespace.clone(),
+                            Some(correlation_id.clone()),
+                        )
+                        .await;
+                }
+                Err(error) => {
+                    warn!(
+                        runtime_hook,
+                        event_id = %result.event_id,
+                        trigger_type = ?auto_reflect_trigger_type,
+                        trigger_key = %auto_reflect_trigger_key,
+                        error = %error,
+                        "best-effort auto-reflection failed after successful ingest"
+                    );
+                    self.runtime
+                        .record_auto_reflection_failure_operation(
+                            "ingest_interaction",
+                            dashboard_namespace.clone(),
+                            Some(correlation_id.clone()),
+                            auto_reflect_trigger_type,
+                            &auto_reflect_trigger_key,
+                            &error,
+                        )
+                        .await;
+                }
             }
         }
         self.runtime.dashboard.record_tool_ok(
@@ -294,7 +285,84 @@ impl Server {
     }
 
     #[tool(
-        description = "Search complete event, claim, scoped Episode, or scoped Reflection provenance records in one explicit local memory namespace. Omitted record_type preserves Event behavior. Additive record_types runs a scoped union of the requested types with a stable recorded_at / type / id order. Event queries support exact reference, kind, inclusive time range, and bounded recent-first results. Claim queries support exact reference, status, and mode; claims have no stored recorded_at timestamp. Episode queries support an exact persisted episode_reference. Reflection queries attribute rows only through same-scope Claim endpoints, hide mixed-scope edges, and exclude record-only reflections. Union queries reject type-specific filters.",
+        description = "Recall active claims and event summaries by literal text in one explicit namespace, entirely offline. ASCII case-insensitive; CJK matches exact substrings including two-character terms. Up to 8 whitespace-separated terms and 512 query bytes, any-term matches. Bounded balanced Claim/Event allocation and interleaving; within each type rank by matched-term count, known recording time, then stable ID. Unknown recording time does not imply recency. Full provenance included. Existing search_memory remains history browsing. No semantic/vector search or model call. Optional caller_budget cooperatively limits caller-reported attempts and returns a receipt; omitted preserves legacy behavior.",
+        input_schema = rmcp::handler::server::tool::cached_schema_for_type::<Parameters<super::dto::RecallMemoryParams>>()
+    )]
+    async fn recall_memory(&self, raw_params: JsonObject) -> Result<CallToolResult, McpError> {
+        let decision = caller_budget::admit_raw(
+            &raw_params,
+            crate::domain::caller_budget::CallerOperation::Retrieval,
+        )?;
+        let params =
+            decode_tool_params::<super::dto::RecallMemoryParams>(raw_params).map_err(|error| {
+                caller_budget::attach_error(
+                    McpError::invalid_params(error.to_string(), None),
+                    &decision,
+                )
+            })?;
+        let input = crate::application::recall_memory::RecallMemoryInput::try_from(params)
+            .map_err(|error| {
+                caller_budget::attach_error(
+                    McpError::invalid_params(error.to_string(), None),
+                    &decision,
+                )
+            })?;
+        let result = map_tool_error(
+            &self.runtime,
+            "recall_memory",
+            Some(input.namespace.as_str().to_string()),
+            None,
+            crate::application::recall_memory::execute(&self.runtime.store, input).await,
+        )
+        .await
+        .map_err(|error| caller_budget::attach_error(error, &decision))?;
+        caller_budget::structured(result, decision)
+    }
+
+    #[tool(
+        description = "Build offline task context from active claims and event observations in an explicit namespace. Returns whole records with provenance, bounded source-linked rich Episode snapshots (legacy Episode references remain in primary provenance), status and missing-evidence diagnostics when they fit, and explicit omission counts. max_bytes is a hard UTF-8 byte cap on compact serialized result JSON including all metadata, excluding the MCP/JSON-RPC transport envelope. Too-small budgets are rejected; no token-count guarantee. Fetch omitted records using scoped get_memory or get_episode_detail. Optional caller_budget receipt is included inside the result byte cap; counts are caller-owned, not durable quotas.",
+        input_schema = rmcp::handler::server::tool::cached_schema_for_type::<Parameters<super::dto::BuildTaskContextParams>>()
+    )]
+    async fn build_task_context(&self, raw_params: JsonObject) -> Result<CallToolResult, McpError> {
+        let decision = caller_budget::admit_raw(
+            &raw_params,
+            crate::domain::caller_budget::CallerOperation::Retrieval,
+        )?;
+        let params = decode_tool_params::<super::dto::BuildTaskContextParams>(raw_params).map_err(
+            |error| {
+                caller_budget::attach_error(
+                    McpError::invalid_params(error.to_string(), None),
+                    &decision,
+                )
+            },
+        )?;
+        let input = crate::application::build_task_context::BuildTaskContextInput::try_from(params)
+            .map_err(|error| {
+                caller_budget::attach_error(
+                    McpError::invalid_params(error.to_string(), None),
+                    &decision,
+                )
+            })?;
+        let result = map_tool_error(
+            &self.runtime,
+            "build_task_context",
+            Some(input.namespace.as_str().to_string()),
+            None,
+            crate::application::build_task_context::execute_with_caller_budget(
+                &self.runtime.store,
+                input,
+                decision.clone(),
+            )
+            .await,
+        )
+        .await
+        .map_err(|error| caller_budget::attach_error(error, &decision))?;
+        // Structured-only, matching the other tools: no duplicate text payload.
+        structured(result)
+    }
+
+    #[tool(
+        description = "Search complete event, claim, scoped Episode, or scoped Reflection provenance records in one explicit local memory namespace. Omitted record_type preserves Event behavior. Additive record_types runs a scoped union of the requested types with a stable recorded_at / type / id order. Event queries support exact reference, kind, inclusive time range, and bounded recent-first results. Claim queries support exact reference, status and mode, with nullable recording/observation metadata; explicit time-window filters remain Event-only. Episode queries support an exact persisted episode_reference. Reflection queries preserve same-scope Claim endpoint rules and additionally admit safely attributed targetless records; unknown or incompatible origin/effect/evidence scope stays hidden. Union queries reject type-specific filters.",
         input_schema = rmcp::handler::server::tool::cached_schema_for_type::<Parameters<SearchMemoryParams>>()
     )]
     async fn search_memory(&self, raw_params: JsonObject) -> Result<CallToolResult, McpError> {
@@ -356,7 +424,7 @@ impl Server {
     }
 
     #[tool(
-        description = "Get one complete event, claim, scoped Episode, or scoped Reflection record by stable ID inside one explicit local memory namespace. Omitted record_type preserves Event behavior. Claim, Episode, and Reflection lookup require their explicit record_type. Episode and Reflection ids are opaque exact persisted references. Record-only reflections stay invisible. Canonical and raw Event/Claim IDs are supported. A missing or cross-scope record returns null without widening the query.",
+        description = "Get one complete event, claim, scoped Episode, or scoped Reflection record by stable ID inside one explicit local memory namespace. Omitted record_type preserves Event behavior. Claim, Episode, and Reflection lookup require their explicit record_type. Episode and Reflection ids are opaque exact persisted references. Safely attributed record-only reflections are readable; unknown or incompatible origin/effect/evidence scope stays hidden. Canonical and raw Event/Claim IDs are supported. A missing or cross-scope record returns null without widening the query.",
         input_schema = rmcp::handler::server::tool::cached_schema_for_type::<Parameters<GetMemoryParams>>()
     )]
     async fn get_memory(&self, raw_params: JsonObject) -> Result<CallToolResult, McpError> {
@@ -473,7 +541,7 @@ impl Server {
     }
 
     #[tool(
-        description = "Read scoped identity or commitment revision audits persisted on reflections inside one explicit local memory namespace. Only claim-attributed reflections are visible. Record-only identity or commitment updates stay hidden. This first slice does not version identity_claims or commitments tables and does not provide rollback.",
+        description = "Read scoped identity or commitment revision audits persisted on reflections inside one explicit local memory namespace. Claim-attributed and safely source/effect-attributed targetless audits are visible; unknown or incompatible record-only scope stays hidden. This compatibility history does not expose aggregate snapshots; get_self_model_versions is the separate opt-in version reader.",
         input_schema = rmcp::handler::server::tool::cached_schema_for_type::<Parameters<GetSelfModelHistoryParams>>()
     )]
     async fn get_self_model_history(
@@ -530,6 +598,63 @@ impl Server {
                     Some(correlation_id),
                 )
                 .with_response_summary(response_summary),
+            )
+            .await;
+        structured(result)
+    }
+
+    #[tool(
+        description = "Read bounded experimental self-model versions, newest first, within one explicit namespace. Requires allow_global_version_metadata:true because global counters reveal cross-namespace activity and do not provide authorization. Returns only written patches whose source reflection has verified single-scope durable evidence. Inherited aggregate state is omitted; previous values are redacted unless their own source has the same verified scope. Baselines and unknown/mixed provenance are hidden. Uses one consistent read transaction and fails closed on projection drift.",
+        input_schema = rmcp::handler::server::tool::cached_schema_for_type::<Parameters<GetSelfModelVersionsParams>>()
+    )]
+    async fn get_self_model_versions(
+        &self,
+        raw_params: JsonObject,
+    ) -> Result<CallToolResult, McpError> {
+        let correlation_id = generated_mcp_correlation_id();
+        let params = map_tool_error(
+            &self.runtime,
+            "get_self_model_versions",
+            None,
+            Some(correlation_id.clone()),
+            decode_tool_params::<GetSelfModelVersionsParams>(raw_params),
+        )
+        .await?;
+        let namespace = Some(params.namespace.clone());
+        let input = map_tool_error(
+            &self.runtime,
+            "get_self_model_versions",
+            namespace.clone(),
+            Some(correlation_id.clone()),
+            get_self_model_versions::GetSelfModelVersionsInput::try_from(params),
+        )
+        .await?;
+        let result = map_tool_error(
+            &self.runtime,
+            "get_self_model_versions",
+            namespace.clone(),
+            Some(correlation_id.clone()),
+            get_self_model_versions::execute(&self.runtime, input).await,
+        )
+        .await?;
+        let summary = serde_json::json!({
+            "result_count": result.records.len(),
+            "has_more": result.has_more,
+        });
+        self.runtime.dashboard.record_tool_ok(
+            "get_self_model_versions",
+            namespace.clone(),
+            Some(correlation_id.clone()),
+            format!(
+                "self-model versions returned {} record(s)",
+                result.records.len()
+            ),
+            &summary,
+        );
+        self.runtime
+            .record_tool_operation(
+                ToolOperationRecord::ok("get_self_model_versions", namespace, Some(correlation_id))
+                    .with_response_summary(summary),
             )
             .await;
         structured(result)
@@ -886,10 +1011,14 @@ impl Server {
     }
 
     #[tool(
-        description = "Record a reflection that supersedes an existing claim. Scoped claim correction with explicit namespace uses supersede_memory.",
+        description = "Record a governed Claim correction, or evidence-backed targetless record-only history with explicit origin_namespace. Targetless MCP calls cannot change identity or commitments; scope metadata grants no authority. Scoped Claim correction also uses supersede_memory. Optional global patches append self-model versions; expected_self_model_version guards the global head. Explicit component rollback additionally requires confirm:true, origin_namespace, an existing Claim target, evidence, and request_id, and appends a compensating version. Optional caller_budget limits caller-reported attempts and can explicitly stop unchanged or insufficient evidence before writes; it grants no authority.",
         input_schema = rmcp::handler::server::tool::cached_schema_for_type::<Parameters<RunReflectionParams>>()
     )]
     async fn run_reflection(&self, raw_params: JsonObject) -> Result<CallToolResult, McpError> {
+        let decision = caller_budget::admit_raw(
+            &raw_params,
+            crate::domain::caller_budget::CallerOperation::Reflection,
+        )?;
         let correlation_id = generated_mcp_correlation_id();
         let params = map_tool_error(
             &self.runtime,
@@ -898,7 +1027,8 @@ impl Server {
             Some(correlation_id.clone()),
             decode_tool_params::<RunReflectionParams>(raw_params),
         )
-        .await?;
+        .await
+        .map_err(|error| caller_budget::attach_error(error, &decision))?;
         let input = map_tool_error(
             &self.runtime,
             "run_reflection",
@@ -906,7 +1036,8 @@ impl Server {
             Some(correlation_id.clone()),
             ReflectionInput::try_from(params),
         )
-        .await?;
+        .await
+        .map_err(|error| caller_budget::attach_error(error, &decision))?;
         let result = map_tool_error(
             &self.runtime,
             "run_reflection",
@@ -914,7 +1045,8 @@ impl Server {
             Some(correlation_id.clone()),
             run_reflection::execute(&self.runtime, input).await,
         )
-        .await?;
+        .await
+        .map_err(|error| caller_budget::attach_error(error, &decision))?;
         self.runtime.dashboard.record_tool_ok(
             "run_reflection",
             None,
@@ -930,6 +1062,492 @@ impl Server {
                     ),
             )
             .await;
+        caller_budget::structured(result, decision)
+    }
+    #[tool(description = "Record a bounded, immutable scoped episode linked to existing same-scope events. Requires request_id for safe retry; observations and lessons are caller reports, not authenticated truth.",
+        input_schema = rmcp::handler::server::tool::cached_schema_for_type::<Parameters<crate::domain::experience::CreateEpisodeRequest>>()
+    )]
+    async fn record_episode(&self, raw_params: JsonObject) -> Result<CallToolResult, McpError> {
+        let params = map_tool_error(
+            &self.runtime,
+            "record_episode",
+            None,
+            None,
+            decode_tool_params::<crate::domain::experience::CreateEpisodeRequest>(raw_params),
+        )
+        .await?;
+        let namespace = Some(params.namespace.clone());
+        let result = map_tool_error(
+            &self.runtime,
+            "record_episode",
+            namespace,
+            None,
+            crate::application::experience::create_episode(&self.runtime.store, params).await,
+        )
+        .await?;
+        structured(result)
+    }
+
+    #[tool(description = "Read one scoped persisted rich episode including objective, actions, observations, result, lesson and source references.",
+        input_schema = rmcp::handler::server::tool::cached_schema_for_type::<Parameters<crate::domain::experience::GetEpisodeRequest>>()
+    )]
+    async fn get_episode_detail(&self, raw_params: JsonObject) -> Result<CallToolResult, McpError> {
+        let params = map_tool_error(
+            &self.runtime,
+            "get_episode_detail",
+            None,
+            None,
+            decode_tool_params::<crate::domain::experience::GetEpisodeRequest>(raw_params),
+        )
+        .await?;
+        let namespace = Some(params.namespace.clone());
+        let result = map_tool_error(
+            &self.runtime,
+            "get_episode_detail",
+            namespace,
+            None,
+            crate::application::experience::get_episode(&self.runtime.store, params).await,
+        )
+        .await?;
+        structured(result)
+    }
+
+    #[tool(description = "List scoped persisted rich episodes with a bounded result limit.",
+        input_schema = rmcp::handler::server::tool::cached_schema_for_type::<Parameters<crate::domain::experience::ListEpisodesRequest>>()
+    )]
+    async fn list_episode_details(
+        &self,
+        raw_params: JsonObject,
+    ) -> Result<CallToolResult, McpError> {
+        let params = map_tool_error(
+            &self.runtime,
+            "list_episode_details",
+            None,
+            None,
+            decode_tool_params::<crate::domain::experience::ListEpisodesRequest>(raw_params),
+        )
+        .await?;
+        let namespace = Some(params.namespace.clone());
+        let result = map_tool_error(
+            &self.runtime,
+            "list_episode_details",
+            namespace,
+            None,
+            crate::application::experience::list_episodes(&self.runtime.store, params).await,
+        )
+        .await?;
+        structured(result)
+    }
+
+    #[tool(description = "Persist an inspectable pending semantic or procedural candidate linked to scoped episodes. Procedure steps remain inert data; this never grants authority.",
+        input_schema = rmcp::handler::server::tool::cached_schema_for_type::<Parameters<crate::domain::experience::CreateCandidateRequest>>()
+    )]
+    async fn propose_experience_candidate(
+        &self,
+        raw_params: JsonObject,
+    ) -> Result<CallToolResult, McpError> {
+        let params = map_tool_error(
+            &self.runtime,
+            "propose_experience_candidate",
+            None,
+            None,
+            decode_tool_params::<crate::domain::experience::CreateCandidateRequest>(raw_params),
+        )
+        .await?;
+        let namespace = Some(params.namespace.clone());
+        let result = map_tool_error(
+            &self.runtime,
+            "propose_experience_candidate",
+            namespace,
+            None,
+            crate::application::experience::create_candidate(&self.runtime.store, params).await,
+        )
+        .await?;
+        structured(result)
+    }
+
+    #[tool(description = "Read a scoped experience candidate current version or explicit historical version.",
+        input_schema = rmcp::handler::server::tool::cached_schema_for_type::<Parameters<crate::domain::experience::GetCandidateRequest>>()
+    )]
+    async fn get_experience_candidate(
+        &self,
+        raw_params: JsonObject,
+    ) -> Result<CallToolResult, McpError> {
+        let params = map_tool_error(
+            &self.runtime,
+            "get_experience_candidate",
+            None,
+            None,
+            decode_tool_params::<crate::domain::experience::GetCandidateRequest>(raw_params),
+        )
+        .await?;
+        let namespace = Some(params.namespace.clone());
+        let result = map_tool_error(
+            &self.runtime,
+            "get_experience_candidate",
+            namespace,
+            None,
+            crate::application::experience::get_candidate(&self.runtime.store, params).await,
+        )
+        .await?;
+        structured(result)
+    }
+
+    #[tool(description = "List scoped current experience candidates and their lifecycle states.",
+        input_schema = rmcp::handler::server::tool::cached_schema_for_type::<Parameters<crate::domain::experience::ListCandidatesRequest>>()
+    )]
+    async fn list_experience_candidates(
+        &self,
+        raw_params: JsonObject,
+    ) -> Result<CallToolResult, McpError> {
+        let params = map_tool_error(
+            &self.runtime,
+            "list_experience_candidates",
+            None,
+            None,
+            decode_tool_params::<crate::domain::experience::ListCandidatesRequest>(raw_params),
+        )
+        .await?;
+        let namespace = Some(params.namespace.clone());
+        let result = map_tool_error(
+            &self.runtime,
+            "list_experience_candidates",
+            namespace,
+            None,
+            crate::application::experience::list_candidates(&self.runtime.store, params).await,
+        )
+        .await?;
+        structured(result)
+    }
+
+    #[tool(description = "Explicitly activate, reject or supersede experience with expected_version conflict protection. Activation only permits knowledge recall, never actions or permissions.",
+        input_schema = rmcp::handler::server::tool::cached_schema_for_type::<Parameters<crate::domain::experience::UpdateCandidateStatusRequest>>()
+    )]
+    async fn set_experience_candidate_status(
+        &self,
+        raw_params: JsonObject,
+    ) -> Result<CallToolResult, McpError> {
+        let params = map_tool_error(
+            &self.runtime,
+            "set_experience_candidate_status",
+            None,
+            None,
+            decode_tool_params::<crate::domain::experience::UpdateCandidateStatusRequest>(
+                raw_params,
+            ),
+        )
+        .await?;
+        let namespace = Some(params.namespace.clone());
+        let result = map_tool_error(
+            &self.runtime,
+            "set_experience_candidate_status",
+            namespace,
+            None,
+            crate::application::experience::update_candidate_status(&self.runtime.store, params)
+                .await,
+        )
+        .await?;
+        structured(result)
+    }
+
+    #[tool(description = "Append a new pending experience version using expected_version. Previous versions remain inspectable; activation is a separate explicit step.",
+        input_schema = rmcp::handler::server::tool::cached_schema_for_type::<Parameters<crate::domain::experience::ReviseCandidateRequest>>()
+    )]
+    async fn revise_experience_candidate(
+        &self,
+        raw_params: JsonObject,
+    ) -> Result<CallToolResult, McpError> {
+        let params = map_tool_error(
+            &self.runtime,
+            "revise_experience_candidate",
+            None,
+            None,
+            decode_tool_params::<crate::domain::experience::ReviseCandidateRequest>(raw_params),
+        )
+        .await?;
+        let namespace = Some(params.namespace.clone());
+        let result = map_tool_error(
+            &self.runtime,
+            "revise_experience_candidate",
+            namespace,
+            None,
+            crate::application::experience::revise_candidate(&self.runtime.store, params).await,
+        )
+        .await?;
+        structured(result)
+    }
+
+    #[tool(description = "Copy an earlier experience version into a new pending version after expected_version check. Preserves history and requires separate reactivation.",
+        input_schema = rmcp::handler::server::tool::cached_schema_for_type::<Parameters<crate::domain::experience::RollbackCandidateRequest>>()
+    )]
+    async fn rollback_experience_candidate(
+        &self,
+        raw_params: JsonObject,
+    ) -> Result<CallToolResult, McpError> {
+        let params = map_tool_error(
+            &self.runtime,
+            "rollback_experience_candidate",
+            None,
+            None,
+            decode_tool_params::<crate::domain::experience::RollbackCandidateRequest>(raw_params),
+        )
+        .await?;
+        let namespace = Some(params.namespace.clone());
+        let result = map_tool_error(
+            &self.runtime,
+            "rollback_experience_candidate",
+            namespace,
+            None,
+            crate::application::experience::rollback_candidate(&self.runtime.store, params).await,
+        )
+        .await?;
+        structured(result)
+    }
+
+    #[tool(description = "Recall active current semantic/procedural experience within namespace and exact response-byte budget, with source episodes. Never executes procedures.",
+        input_schema = rmcp::handler::server::tool::cached_schema_for_type::<Parameters<crate::domain::experience::RecallCandidatesRequest>>()
+    )]
+    async fn recall_experience_candidates(
+        &self,
+        raw_params: JsonObject,
+    ) -> Result<CallToolResult, McpError> {
+        let params = map_tool_error(
+            &self.runtime,
+            "recall_experience_candidates",
+            None,
+            None,
+            decode_tool_params::<crate::domain::experience::RecallCandidatesRequest>(raw_params),
+        )
+        .await?;
+        let namespace = Some(params.namespace.clone());
+        let result = map_tool_error(
+            &self.runtime,
+            "recall_experience_candidates",
+            namespace,
+            None,
+            crate::application::experience::recall_candidates(&self.runtime.store, params).await,
+        )
+        .await?;
+        structured(result)
+    }
+
+    #[tool(description = "Read current scoped Claim fingerprint, status and object for an evidence-bound feedback correction.",
+        input_schema = rmcp::handler::server::tool::cached_schema_for_type::<Parameters<crate::application::feedback_candidate::FeedbackTargetInput>>()
+    )]
+    async fn get_feedback_target_version(
+        &self,
+        raw_params: JsonObject,
+    ) -> Result<CallToolResult, McpError> {
+        let params = map_tool_error(
+            &self.runtime,
+            "get_feedback_target_version",
+            None,
+            None,
+            decode_tool_params::<crate::application::feedback_candidate::FeedbackTargetInput>(
+                raw_params,
+            ),
+        )
+        .await?;
+        let namespace = Some(params.namespace.as_str().to_string());
+        let result = map_tool_error(
+            &self.runtime,
+            "get_feedback_target_version",
+            namespace,
+            None,
+            crate::application::feedback_candidate::get_target_version(&self.runtime, params).await,
+        )
+        .await?;
+        structured(result)
+    }
+
+    #[tool(description = "Persist a pending object-only Claim revision candidate linked to structured feedback events. Does not commit the correction or authenticate tool reports.",
+        input_schema = rmcp::handler::server::tool::cached_schema_for_type::<Parameters<crate::application::feedback_candidate::ProposeFeedbackCandidateInput>>()
+    )]
+    async fn propose_feedback_candidate(
+        &self,
+        raw_params: JsonObject,
+    ) -> Result<CallToolResult, McpError> {
+        let params = map_tool_error(
+            &self.runtime,
+            "propose_feedback_candidate",
+            None,
+            None,
+            decode_tool_params::<
+                crate::application::feedback_candidate::ProposeFeedbackCandidateInput,
+            >(raw_params),
+        )
+        .await?;
+        let namespace = Some(params.namespace.as_str().to_string());
+        let result = map_tool_error(
+            &self.runtime,
+            "propose_feedback_candidate",
+            namespace,
+            None,
+            crate::application::feedback_candidate::propose(&self.runtime, params).await,
+        )
+        .await?;
+        structured(result)
+    }
+
+    #[tool(description = "Inspect a scoped feedback candidate, validation reasons, lifecycle state and committed result references.",
+        input_schema = rmcp::handler::server::tool::cached_schema_for_type::<Parameters<crate::application::feedback_candidate::GetFeedbackCandidateInput>>()
+    )]
+    async fn get_feedback_candidate(
+        &self,
+        raw_params: JsonObject,
+    ) -> Result<CallToolResult, McpError> {
+        let params = map_tool_error(
+            &self.runtime,
+            "get_feedback_candidate",
+            None,
+            None,
+            decode_tool_params::<crate::application::feedback_candidate::GetFeedbackCandidateInput>(
+                raw_params,
+            ),
+        )
+        .await?;
+        let namespace = Some(params.namespace.as_str().to_string());
+        let result = map_tool_error(
+            &self.runtime,
+            "get_feedback_candidate",
+            namespace,
+            None,
+            crate::application::feedback_candidate::get(&self.runtime, params).await,
+        )
+        .await?;
+        structured(result)
+    }
+
+    #[tool(description = "Deterministically validate feedback source category, exact target version, expected/actual alignment, scope and evidence existence. This does not establish semantic truth.",
+        input_schema = rmcp::handler::server::tool::cached_schema_for_type::<Parameters<crate::application::feedback_candidate::FeedbackCandidateActionInput>>()
+    )]
+    async fn validate_feedback_candidate(
+        &self,
+        raw_params: JsonObject,
+    ) -> Result<CallToolResult, McpError> {
+        let params = map_tool_error(
+            &self.runtime,
+            "validate_feedback_candidate",
+            None,
+            None,
+            decode_tool_params::<
+                crate::application::feedback_candidate::FeedbackCandidateActionInput,
+            >(raw_params),
+        )
+        .await?;
+        let namespace = Some(params.namespace.as_str().to_string());
+        let result = map_tool_error(
+            &self.runtime,
+            "validate_feedback_candidate",
+            namespace,
+            None,
+            crate::application::feedback_candidate::validate(&self.runtime, params).await,
+        )
+        .await?;
+        structured(result)
+    }
+
+    #[tool(description = "Reject a pending or blocked feedback candidate with a persisted reason and durable retry receipt.",
+        input_schema = rmcp::handler::server::tool::cached_schema_for_type::<Parameters<crate::application::feedback_candidate::RejectFeedbackCandidateInput>>()
+    )]
+    async fn reject_feedback_candidate(
+        &self,
+        raw_params: JsonObject,
+    ) -> Result<CallToolResult, McpError> {
+        let params = map_tool_error(
+            &self.runtime,
+            "reject_feedback_candidate",
+            None,
+            None,
+            decode_tool_params::<
+                crate::application::feedback_candidate::RejectFeedbackCandidateInput,
+            >(raw_params),
+        )
+        .await?;
+        let namespace = Some(params.namespace.as_str().to_string());
+        let result = map_tool_error(
+            &self.runtime,
+            "reject_feedback_candidate",
+            namespace,
+            None,
+            crate::application::feedback_candidate::reject(&self.runtime, params).await,
+        )
+        .await?;
+        structured(result)
+    }
+
+    #[tool(description = "Revalidate an evidence-bound feedback candidate and atomically commit its Claim correction, history, candidate state and receipt. Never alters identity, commitments or permissions.",
+        input_schema = rmcp::handler::server::tool::cached_schema_for_type::<Parameters<crate::application::feedback_candidate::FeedbackCandidateActionInput>>()
+    )]
+    async fn commit_feedback_candidate(
+        &self,
+        raw_params: JsonObject,
+    ) -> Result<CallToolResult, McpError> {
+        let params = map_tool_error(
+            &self.runtime,
+            "commit_feedback_candidate",
+            None,
+            None,
+            decode_tool_params::<
+                crate::application::feedback_candidate::FeedbackCandidateActionInput,
+            >(raw_params),
+        )
+        .await?;
+        let namespace = Some(params.namespace.as_str().to_string());
+        let result = map_tool_error(
+            &self.runtime,
+            "commit_feedback_candidate",
+            namespace,
+            None,
+            crate::application::feedback_candidate::commit(&self.runtime, params).await,
+        )
+        .await?;
+        structured(result)
+    }
+
+    #[tool(
+        description = "Export safe same-scope durable memory as bounded inspectable JSON from one read snapshot. No database writes or logs, including on failure. Excludes global identity/commitments, operation logs/receipts, feedback candidates and derived indexes. This is not a replayable backup, secret-redaction service or authorization boundary. Limits fail closed rather than produce dangling truncated graphs.",
+        input_schema = rmcp::handler::server::tool::cached_schema_for_type::<Parameters<crate::domain::ledger_export::ExportMemoryRequest>>()
+    )]
+    async fn export_memory(&self, raw_params: JsonObject) -> Result<CallToolResult, McpError> {
+        // Export intentionally bypasses diagnostic wrappers too: a read-only
+        // extraction must not leave operation-log rows when it succeeds or fails.
+        let params =
+            decode_tool_params::<crate::domain::ledger_export::ExportMemoryRequest>(raw_params)
+                .map_err(|error| McpError::invalid_params(error.to_string(), None))?;
+        let result = crate::application::export_memory::export_memory(&self.runtime.store, params)
+            .await
+            .map_err(|error| McpError::invalid_params(error.to_string(), None))?;
+        structured(result)
+    }
+
+    #[tool(
+        description = "Inspect the rebuildable local FTS index without writing. Checks source projection, postings, and trigger definitions; ledger facts remain authoritative."
+    )]
+    async fn inspect_retrieval_index(&self) -> Result<CallToolResult, McpError> {
+        let result = map_tool_error(
+            &self.runtime,
+            "inspect_retrieval_index",
+            None,
+            None,
+            self.runtime.store.inspect_retrieval_index().await,
+        )
+        .await?;
+        structured(result)
+    }
+
+    #[tool(
+        description = "Explicitly rebuild only derived local retrieval tables and triggers from durable ledger facts in one transaction. Does not alter events, claims, permissions, identity or commitments."
+    )]
+    async fn rebuild_retrieval_index(&self) -> Result<CallToolResult, McpError> {
+        let result = map_tool_error(
+            &self.runtime,
+            "rebuild_retrieval_index",
+            None,
+            None,
+            self.runtime.store.rebuild_retrieval_index().await,
+        )
+        .await?;
         structured(result)
     }
 }
@@ -943,757 +1561,4 @@ impl ServerHandler for Server {
             ..Default::default()
         }
     }
-}
-
-#[derive(Clone)]
-struct Runtime {
-    store: SqliteStore,
-    model: RuntimeModel,
-    dashboard: DashboardObserver,
-}
-
-#[derive(Clone)]
-enum RuntimeModel {
-    Mock(MockModel),
-    OpenAiCompatible(OpenAiCompatibleModel),
-}
-
-impl Runtime {
-    async fn from_store(
-        config: &AppConfig,
-        store: SqliteStore,
-        dashboard: DashboardObserver,
-    ) -> Result<Self, AppError> {
-        config.validate().map_err(AppError::Message)?;
-
-        let runtime = Self {
-            store,
-            model: build_runtime_model(config)?,
-            dashboard,
-        };
-        runtime.validate_default_identity().await?;
-        Ok(runtime)
-    }
-
-    async fn validate_default_identity(&self) -> Result<(), AppError> {
-        self.store.load_identity().await.map(|_| ())
-    }
-
-    async fn record_tool_operation(&self, record: ToolOperationRecord) {
-        let entry = OperationLogEntry {
-            operation_id: Uuid::new_v4().to_string(),
-            occurred_at: Utc::now(),
-            namespace: record.namespace,
-            actor_kind: ActorKind::System,
-            actor_id: "mcp-stdio".to_string(),
-            entrypoint: record.entrypoint.to_string(),
-            operation_kind: OperationLogKind::Tool,
-            status: record.status,
-            correlation_id: record.correlation_id,
-            request_summary_json: record.request_summary.map(|value| value.to_string()),
-            response_summary_json: record.response_summary.map(|value| value.to_string()),
-            diagnostic_summary_json: record.diagnostic_summary.map(|value| value.to_string()),
-            redaction_version: 1,
-        };
-
-        if let Err(error) = self.store.append_operation(entry).await {
-            warn!(
-                entrypoint = record.entrypoint,
-                error = %error,
-                "failed to append MCP tool operation log entry"
-            );
-        }
-    }
-
-    /// B1：把 auto-reflection 的诊断落到 durable operation log（OperationLogKind::Trigger）。
-    /// 在此之前没有任何代码写 Trigger 条目，导致 doctor 的 trigger_candidates_suppressed
-    /// 运行时恒为 0（只有测试手动 seed 才非零）。这里 best-effort 写入：失败仅 warn，
-    /// 绝不影响主工具流程，与上面的 record_tool_operation 语义一致。
-    ///
-    /// 只写「有诊断价值」的结局（Handled/Rejected/Suppressed/Pending）；NotTriggered（→ Ok）
-    /// 是绝大多数 ingest 的常态，doctor 也只统计 Failed/Suppressed，写它纯属噪声且会污染
-    /// operation-log 历史，故在此提前返回跳过。
-    async fn record_auto_reflection_operation(
-        &self,
-        entrypoint: &'static str,
-        result: &auto_reflect_if_needed::AutoReflectResult,
-        namespace: Option<String>,
-        correlation_id: Option<String>,
-    ) {
-        let status = auto_reflection_operation_status(result);
-        if status == OperationLogStatus::Ok {
-            return;
-        }
-        let diagnostic_summary_json = Some(auto_reflection_diagnostic_summary(result).to_string());
-        let entry = OperationLogEntry {
-            operation_id: Uuid::new_v4().to_string(),
-            occurred_at: Utc::now(),
-            namespace,
-            actor_kind: ActorKind::System,
-            actor_id: "mcp-stdio".to_string(),
-            entrypoint: entrypoint.to_string(),
-            operation_kind: OperationLogKind::Trigger,
-            status,
-            correlation_id,
-            request_summary_json: None,
-            response_summary_json: None,
-            diagnostic_summary_json,
-            redaction_version: 1,
-        };
-
-        if let Err(error) = self.store.append_operation(entry).await {
-            warn!(
-                entrypoint,
-                error = %error,
-                "failed to append auto-reflection trigger operation log entry"
-            );
-        }
-    }
-
-    async fn record_auto_reflection_failure_operation(
-        &self,
-        entrypoint: &'static str,
-        namespace: Option<String>,
-        correlation_id: Option<String>,
-        trigger_type: TriggerType,
-        trigger_key: &str,
-        error: &AppError,
-    ) {
-        let status = auto_reflection_failure_operation_status(error);
-        let entry = OperationLogEntry {
-            operation_id: Uuid::new_v4().to_string(),
-            occurred_at: Utc::now(),
-            namespace,
-            actor_kind: ActorKind::System,
-            actor_id: "mcp-stdio".to_string(),
-            entrypoint: entrypoint.to_string(),
-            operation_kind: OperationLogKind::Trigger,
-            status,
-            correlation_id,
-            request_summary_json: None,
-            response_summary_json: None,
-            diagnostic_summary_json: Some(
-                auto_reflection_failure_diagnostic_summary(trigger_type, trigger_key, error)
-                    .to_string(),
-            ),
-            redaction_version: 1,
-        };
-
-        if let Err(error) = self.store.append_operation(entry).await {
-            warn!(
-                entrypoint,
-                error = %error,
-                "failed to append failed auto-reflection trigger operation log entry"
-            );
-        }
-    }
-}
-
-struct ToolOperationRecord {
-    entrypoint: &'static str,
-    namespace: Option<String>,
-    status: OperationLogStatus,
-    correlation_id: Option<String>,
-    request_summary: Option<serde_json::Value>,
-    response_summary: Option<serde_json::Value>,
-    diagnostic_summary: Option<serde_json::Value>,
-}
-
-impl ToolOperationRecord {
-    fn ok(
-        entrypoint: &'static str,
-        namespace: Option<String>,
-        correlation_id: Option<String>,
-    ) -> Self {
-        Self {
-            entrypoint,
-            namespace,
-            status: OperationLogStatus::Ok,
-            correlation_id,
-            request_summary: None,
-            response_summary: None,
-            diagnostic_summary: None,
-        }
-    }
-
-    fn with_response_summary(mut self, summary: serde_json::Value) -> Self {
-        self.response_summary = Some(summary);
-        self
-    }
-
-    fn failed(
-        entrypoint: &'static str,
-        namespace: Option<String>,
-        correlation_id: Option<String>,
-    ) -> Self {
-        Self {
-            entrypoint,
-            namespace,
-            status: OperationLogStatus::Failed,
-            correlation_id,
-            request_summary: None,
-            response_summary: None,
-            diagnostic_summary: None,
-        }
-    }
-
-    fn with_diagnostic_summary(mut self, summary: serde_json::Value) -> Self {
-        self.diagnostic_summary = Some(summary);
-        self
-    }
-}
-
-fn generated_mcp_correlation_id() -> String {
-    format!("mcp-tool-call-{}", Uuid::new_v4())
-}
-
-fn decode_tool_params<T: DeserializeOwned>(raw_params: JsonObject) -> Result<T, AppError> {
-    serde_json::from_value(serde_json::Value::Object(raw_params)).map_err(|error| {
-        AppError::InvalidParams(format!("failed to deserialize parameters: {error}"))
-    })
-}
-
-fn build_runtime_model(config: &AppConfig) -> Result<RuntimeModel, AppError> {
-    match &config.model_config {
-        ModelConfig::Mock => Ok(RuntimeModel::Mock(MockModel)),
-        ModelConfig::OpenAiCompatible(model_config) => Ok(RuntimeModel::OpenAiCompatible(
-            OpenAiCompatibleModel::new(model_config.clone())?,
-        )),
-        ModelConfig::OpenRouter(model_config) => Ok(RuntimeModel::OpenAiCompatible(
-            OpenAiCompatibleModel::new_for_provider(model_config.clone(), "openrouter")?,
-        )),
-    }
-}
-
-#[async_trait]
-impl Clock for Runtime {
-    async fn now(&self) -> Result<DateTime<Utc>, AppError> {
-        Ok(Utc::now())
-    }
-}
-
-#[async_trait]
-impl IdGenerator for Runtime {
-    async fn next_id(&self) -> Result<String, AppError> {
-        Ok(Uuid::new_v4().to_string())
-    }
-}
-
-#[async_trait]
-impl EventStore for Runtime {
-    async fn append_event(&self, event: StoredEvent) -> Result<(), AppError> {
-        self.store.append_event(event).await
-    }
-
-    async fn list_event_references(&self) -> Result<Vec<String>, AppError> {
-        self.store.list_event_references().await
-    }
-
-    async fn list_event_references_in_scope(
-        &self,
-        scope: &MemoryScope,
-        evidence_manifest: Option<&[EventReference]>,
-    ) -> Result<Vec<String>, AppError> {
-        self.store
-            .list_event_references_in_scope(scope, evidence_manifest)
-            .await
-    }
-
-    async fn list_event_references_for_snapshot(
-        &self,
-        scope: &MemoryScope,
-        evidence_manifest: Option<&[EventReference]>,
-        time_window: &SnapshotTimeWindow,
-    ) -> Result<Vec<String>, AppError> {
-        self.store
-            .list_event_references_for_snapshot(scope, evidence_manifest, time_window)
-            .await
-    }
-
-    async fn list_recorded_at_for_snapshot_manifest(
-        &self,
-        scope: &MemoryScope,
-        evidence_manifest: &[EventReference],
-    ) -> Result<Vec<DateTime<Utc>>, AppError> {
-        self.store
-            .list_recorded_at_for_snapshot_manifest(scope, evidence_manifest)
-            .await
-    }
-
-    async fn query_evidence_event_ids(
-        &self,
-        query: EvidenceQuery,
-    ) -> Result<Vec<String>, AppError> {
-        self.store.query_evidence_event_ids(query).await
-    }
-
-    async fn query_evidence_event_ids_unbounded(
-        &self,
-        query: EvidenceQuery,
-    ) -> Result<Vec<String>, AppError> {
-        self.store.query_evidence_event_ids_unbounded(query).await
-    }
-
-    async fn has_event(&self, event_id: &str) -> Result<bool, AppError> {
-        self.store.has_event(event_id).await
-    }
-}
-
-#[async_trait]
-impl MemoryReadStore for Runtime {
-    async fn query_event_records(
-        &self,
-        query: EventRecordQuery,
-    ) -> Result<Vec<EventReadRecord>, AppError> {
-        self.store.query_event_records(query).await
-    }
-
-    async fn query_claim_records(
-        &self,
-        query: ClaimRecordQuery,
-    ) -> Result<Vec<ClaimReadRecord>, AppError> {
-        self.store.query_claim_records(query).await
-    }
-
-    async fn query_episode_records(
-        &self,
-        query: EpisodeRecordQuery,
-    ) -> Result<Vec<EpisodeReadRecord>, AppError> {
-        self.store.query_episode_records(query).await
-    }
-
-    async fn query_reflection_records(
-        &self,
-        query: ReflectionRecordQuery,
-    ) -> Result<Vec<ReflectionReadRecord>, AppError> {
-        self.store.query_reflection_records(query).await
-    }
-
-    async fn query_scoped_event_ids(
-        &self,
-        query: ScopedEventIdQuery,
-    ) -> Result<std::collections::BTreeSet<String>, AppError> {
-        self.store.query_scoped_event_ids(query).await
-    }
-
-    async fn query_claim_reflection_history(
-        &self,
-        query: ClaimReflectionHistoryQuery,
-    ) -> Result<ClaimReflectionHistoryPage, AppError> {
-        self.store.query_claim_reflection_history(query).await
-    }
-
-    async fn query_self_model_history(
-        &self,
-        query: SelfModelHistoryQuery,
-    ) -> Result<SelfModelHistoryPage, AppError> {
-        self.store.query_self_model_history(query).await
-    }
-}
-
-#[async_trait]
-impl ClaimStore for Runtime {
-    async fn upsert_claim(&self, claim: StoredClaim) -> Result<(), AppError> {
-        self.store.upsert_claim(claim).await
-    }
-
-    async fn link_evidence(&self, claim_id: String, event_id: String) -> Result<(), AppError> {
-        self.store.link_evidence(claim_id, event_id).await
-    }
-
-    async fn list_active_claims(&self) -> Result<Vec<StoredClaim>, AppError> {
-        self.store.list_active_claims().await
-    }
-
-    async fn list_active_claims_in_scope(
-        &self,
-        scope: &MemoryScope,
-    ) -> Result<Vec<StoredClaim>, AppError> {
-        self.store.list_active_claims_in_scope(scope).await
-    }
-
-    async fn update_claim_status(
-        &self,
-        claim_id: &str,
-        status: ClaimStatus,
-    ) -> Result<(), AppError> {
-        self.store.update_claim_status(claim_id, status).await
-    }
-}
-
-#[async_trait]
-impl EpisodeStore for Runtime {
-    async fn record_event_in_episode(
-        &self,
-        episode_reference: String,
-        event_id: String,
-    ) -> Result<(), AppError> {
-        self.store
-            .record_event_in_episode(episode_reference, event_id)
-            .await
-    }
-
-    async fn list_episode_references(&self) -> Result<Vec<String>, AppError> {
-        self.store.list_episode_references().await
-    }
-
-    async fn list_episode_references_supporting_claims(
-        &self,
-        scope: &MemoryScope,
-        claim_ids: &[String],
-    ) -> Result<Vec<String>, AppError> {
-        self.store
-            .list_episode_references_supporting_claims(scope, claim_ids)
-            .await
-    }
-
-    async fn list_episode_references_in_scope(
-        &self,
-        scope: &MemoryScope,
-    ) -> Result<Vec<String>, AppError> {
-        self.store.list_episode_references_in_scope(scope).await
-    }
-
-    async fn list_episode_references_for_snapshot(
-        &self,
-        scope: &MemoryScope,
-        time_window: &SnapshotTimeWindow,
-    ) -> Result<Vec<String>, AppError> {
-        self.store
-            .list_episode_references_for_snapshot(scope, time_window)
-            .await
-    }
-}
-
-#[async_trait]
-impl ReflectionStore for Runtime {
-    async fn append_reflection(&self, reflection: StoredReflection) -> Result<(), AppError> {
-        self.store.append_reflection(reflection).await
-    }
-}
-
-#[async_trait]
-impl TriggerLedgerStore for Runtime {
-    async fn record_trigger_attempt(
-        &self,
-        entry: StoredTriggerLedgerEntry,
-    ) -> Result<(), AppError> {
-        self.store.record_trigger_attempt(entry).await
-    }
-
-    async fn latest_trigger_entry(
-        &self,
-        trigger_key: &str,
-    ) -> Result<Option<StoredTriggerLedgerEntry>, AppError> {
-        self.store.latest_trigger_entry(trigger_key).await
-    }
-
-    async fn latest_handled_trigger_entry(
-        &self,
-        trigger_key: &str,
-    ) -> Result<Option<StoredTriggerLedgerEntry>, AppError> {
-        self.store.latest_handled_trigger_entry(trigger_key).await
-    }
-}
-
-#[async_trait]
-impl IdentityStore for Runtime {
-    async fn load_identity(&self) -> Result<IdentityCore, AppError> {
-        self.store.load_identity().await
-    }
-
-    async fn save_identity(&self, identity: IdentityCore) -> Result<(), AppError> {
-        self.store.save_identity(identity).await
-    }
-}
-
-#[async_trait]
-impl CommitmentStore for Runtime {
-    async fn list_commitments(
-        &self,
-    ) -> Result<Vec<crate::domain::commitment::Commitment>, AppError> {
-        self.store.list_commitments().await
-    }
-}
-
-#[async_trait]
-impl ModelPort for Runtime {
-    async fn decide(&self, request: ModelDecisionRequest) -> Result<ModelDecision, AppError> {
-        match &self.model {
-            RuntimeModel::Mock(model) => model.decide(request).await,
-            RuntimeModel::OpenAiCompatible(model) => model.decide(request).await,
-        }
-    }
-
-    async fn propose_self_revision(
-        &self,
-        request: SelfRevisionRequest,
-    ) -> Result<SelfRevisionProposal, AppError> {
-        match &self.model {
-            RuntimeModel::Mock(model) => model.propose_self_revision(request).await,
-            RuntimeModel::OpenAiCompatible(model) => model.propose_self_revision(request).await,
-        }
-    }
-}
-
-#[async_trait]
-impl IngestTransactionRunner for Runtime {
-    async fn begin_ingest_transaction(
-        &self,
-    ) -> Result<Box<dyn IngestTransaction + Send + '_>, AppError> {
-        self.store.begin_ingest_transaction().await
-    }
-}
-
-#[async_trait]
-impl ReflectionTransactionRunner for Runtime {
-    async fn begin_reflection_transaction(
-        &self,
-    ) -> Result<Box<dyn ReflectionTransaction + Send + '_>, AppError> {
-        self.store.begin_reflection_transaction().await
-    }
-}
-
-fn app_error_to_mcp(error: AppError) -> McpError {
-    match error {
-        AppError::InvalidParams(message) => McpError::invalid_params(message, None),
-        AppError::Message(message) => McpError::internal_error(message, None),
-    }
-}
-
-async fn map_tool_error<T>(
-    runtime: &Runtime,
-    operation: &'static str,
-    namespace: Option<String>,
-    correlation_id: Option<String>,
-    result: Result<T, AppError>,
-) -> Result<T, McpError> {
-    match result {
-        Ok(value) => Ok(value),
-        Err(error) => {
-            Err(record_app_error_to_mcp(runtime, operation, namespace, correlation_id, error).await)
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-enum McpErrorClass {
-    InvalidParams,
-    InternalError,
-}
-
-impl McpErrorClass {
-    fn label(self) -> &'static str {
-        match self {
-            Self::InvalidParams => "invalid params",
-            Self::InternalError => "internal error",
-        }
-    }
-
-    fn code(self) -> i64 {
-        match self {
-            Self::InvalidParams => -32602,
-            Self::InternalError => -32603,
-        }
-    }
-}
-
-fn mcp_error_class(error: &AppError) -> McpErrorClass {
-    match error {
-        AppError::InvalidParams(_) => McpErrorClass::InvalidParams,
-        AppError::Message(_) => McpErrorClass::InternalError,
-    }
-}
-
-async fn record_app_error_to_mcp(
-    runtime: &Runtime,
-    operation: &'static str,
-    namespace: Option<String>,
-    correlation_id: Option<String>,
-    error: AppError,
-) -> McpError {
-    let error_class = mcp_error_class(&error);
-    let summary = format!("{operation} failed");
-    let diagnostic_detail = safe_diagnostic_detail(&error);
-    runtime.dashboard.record_tool_failed(
-        operation,
-        namespace.clone(),
-        correlation_id.clone(),
-        summary,
-        diagnostic_detail.to_string(),
-    );
-    runtime
-        .record_tool_operation(
-            ToolOperationRecord::failed(operation, namespace, correlation_id)
-                .with_diagnostic_summary(serde_json::json!({
-                    "mcp_error_class": error_class.label(),
-                    "mcp_error_code": error_class.code(),
-                    "mcp_error_detail": diagnostic_detail,
-                })),
-        )
-        .await;
-    app_error_to_mcp(error)
-}
-
-fn safe_diagnostic_detail(error: &AppError) -> &'static str {
-    match error {
-        AppError::InvalidParams(message) if message.contains("missing field") => "missing field",
-        AppError::InvalidParams(message) if message.contains("invalid type") => "invalid type",
-        AppError::InvalidParams(_) => "invalid params",
-        AppError::Message(_) => "internal error",
-    }
-}
-
-fn auto_reflection_diagnostic_summary(
-    result: &auto_reflect_if_needed::AutoReflectResult,
-) -> serde_json::Value {
-    let diagnostics = &result.diagnostics;
-    serde_json::json!({
-        "trigger_type": diagnostics.trigger_type,
-        "namespace": diagnostics.namespace,
-        "trigger_key": diagnostics.trigger_key,
-        "ledger_status": result.ledger_status.map(TriggerLedgerStatus::as_str),
-        "reflection_id": result.reflection_id,
-        "outcome": diagnostics.outcome,
-        "suppression_reason": diagnostics.suppression_reason,
-        "suppression_category": diagnostics.suppression_category,
-        "rejection_reason": diagnostics
-            .rejection_reason
-            .as_ref()
-            .map(|_| "model_rationale_omitted"),
-        "cooldown_boundary": diagnostics.cooldown_boundary.map(|value| value.to_rfc3339()),
-        "cooldown_state": diagnostics.cooldown_state,
-        "evidence_window_size": diagnostics.evidence_window_size,
-        "selected_evidence_event_ids": diagnostics.selected_evidence_event_ids,
-        "durable_write_path": diagnostics.durable_write_path,
-    })
-}
-
-fn auto_reflection_failure_diagnostic_summary(
-    trigger_type: TriggerType,
-    trigger_key: &str,
-    error: &AppError,
-) -> serde_json::Value {
-    let error_class = mcp_error_class(error);
-    let is_policy_rejection = is_auto_reflection_policy_rejection(error);
-    serde_json::json!({
-        "trigger_type": trigger_type,
-        "trigger_key": trigger_key,
-        "outcome": if is_policy_rejection { "rejected" } else { "failed" },
-        "rejection_category": if is_policy_rejection { Some("governance_policy") } else { None },
-        "error_class": error_class.label(),
-        "error_code": error_class.code(),
-        "error_detail": safe_diagnostic_detail(error),
-    })
-}
-
-fn auto_reflection_failure_operation_status(error: &AppError) -> OperationLogStatus {
-    if is_auto_reflection_policy_rejection(error) {
-        OperationLogStatus::Rejected
-    } else {
-        OperationLogStatus::Failed
-    }
-}
-
-fn is_auto_reflection_policy_rejection(error: &AppError) -> bool {
-    matches!(error, AppError::InvalidParams(_))
-}
-
-fn log_auto_reflection_success(
-    runtime_hook: &'static str,
-    result: &auto_reflect_if_needed::AutoReflectResult,
-    event_id: Option<&str>,
-    dashboard: &DashboardObserver,
-    namespace: Option<String>,
-    correlation_id: Option<String>,
-) {
-    info!(
-        runtime_hook,
-        event_id = ?event_id,
-        triggered = result.triggered,
-        trigger_type = ?result.trigger_type,
-        trigger_key = ?result.trigger_key,
-        ledger_status = ?result.ledger_status,
-        reflection_id = ?result.reflection_id,
-        suppression_reason = ?result.suppression_reason,
-        rejection_reason = ?result
-            .diagnostics
-            .rejection_reason
-            .as_ref()
-            .map(|_| "model_rationale_omitted"),
-        cooldown_until = ?result.cooldown_until,
-        evidence_event_ids = ?result.evidence_event_ids,
-        "best-effort auto-reflection completed"
-    );
-    let dashboard_payload = auto_reflection_diagnostic_summary(result);
-    dashboard.record_auto_reflection(
-        runtime_hook,
-        namespace,
-        correlation_id,
-        auto_reflection_status(result),
-        auto_reflection_summary(result),
-        &dashboard_payload,
-    );
-}
-
-fn runtime_hook_for(source: &'static str, trigger_type: TriggerType) -> &'static str {
-    match (source, trigger_type) {
-        ("ingest_interaction", TriggerType::Failure) => AUTO_REFLECTION_RUNTIME_HOOKS[0],
-        ("ingest_interaction", TriggerType::Conflict) => AUTO_REFLECTION_RUNTIME_HOOKS[1],
-        ("decide_with_snapshot", TriggerType::Conflict) => AUTO_REFLECTION_RUNTIME_HOOKS[2],
-        ("build_self_snapshot", TriggerType::Periodic) => AUTO_REFLECTION_RUNTIME_HOOKS[3],
-        _ => "auto_reflection:unknown",
-    }
-}
-
-fn auto_reflection_status(result: &auto_reflect_if_needed::AutoReflectResult) -> OperationStatus {
-    match result.ledger_status {
-        Some(TriggerLedgerStatus::Handled) => OperationStatus::Handled,
-        Some(TriggerLedgerStatus::Rejected) => OperationStatus::Rejected,
-        Some(TriggerLedgerStatus::Suppressed) => OperationStatus::Suppressed,
-        Some(TriggerLedgerStatus::Pending) => OperationStatus::Started,
-        None if result.triggered => OperationStatus::Handled,
-        None => OperationStatus::Ok,
-    }
-}
-
-/// 把 auto-reflection 结果映射到 durable operation log 的状态。与 doctor 的候选读取口径对齐：
-/// 只有 Suppressed/Failed 会被 count_trigger_candidates 计入诊断，Handled/Rejected 留痕但不计数，
-/// NotTriggered/Skipped（无 ledger_status 且未触发）落 Ok，避免污染 suppressed 计数。
-fn auto_reflection_operation_status(
-    result: &auto_reflect_if_needed::AutoReflectResult,
-) -> OperationLogStatus {
-    match result.ledger_status {
-        Some(TriggerLedgerStatus::Handled) => OperationLogStatus::Handled,
-        Some(TriggerLedgerStatus::Rejected) => OperationLogStatus::Rejected,
-        Some(TriggerLedgerStatus::Suppressed) => OperationLogStatus::Suppressed,
-        Some(TriggerLedgerStatus::Pending) => OperationLogStatus::Started,
-        None if result.triggered => OperationLogStatus::Handled,
-        None => OperationLogStatus::Ok,
-    }
-}
-
-fn auto_reflection_summary(result: &auto_reflect_if_needed::AutoReflectResult) -> String {
-    if let Some(reflection_id) = result.reflection_id.as_deref() {
-        return format!("auto-reflection linked reflection {reflection_id}");
-    }
-    if let Some(reason) = result.suppression_reason.as_deref() {
-        return format!("auto-reflection suppressed: {reason}");
-    }
-    if result.ledger_status == Some(TriggerLedgerStatus::Rejected) {
-        return "auto-reflection rejected model proposal".to_string();
-    }
-    if result.reason.is_some() {
-        return "auto-reflection checked runtime evidence".to_string();
-    }
-    "auto-reflection checked runtime evidence".to_string()
-}
-
-fn structured<T>(value: T) -> Result<CallToolResult, McpError>
-where
-    T: Serialize,
-{
-    let json = serde_json::to_value(value)
-        .map_err(|error| McpError::internal_error(error.to_string(), None))?;
-    Ok(CallToolResult::structured(json))
 }

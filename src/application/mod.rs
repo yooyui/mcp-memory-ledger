@@ -10,3 +10,13 @@ pub mod ingest_interaction;
 pub mod run_reflection;
 pub mod search_memory;
 pub mod supersede_memory;
+
+pub mod build_task_context;
+pub mod recall_memory;
+
+pub mod experience;
+pub mod feedback_candidate;
+
+pub mod export_memory;
+
+pub mod get_self_model_versions;

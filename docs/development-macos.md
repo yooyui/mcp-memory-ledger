@@ -1,5 +1,16 @@
 # macOS 开发与接入指南
 
+## 2026-10-15 体验与客户端验收
+
+仓库根目录执行 `python3 -E -s -B tools/experience/run.py`（或双击 `tools/experience/Start-Retest.command`）：用户一次隐藏输入后执行定向→全量复测，并自动打开本机动态端口实时网页。无凭据检查用 `python3 -E -s -B -m unittest discover -s tools/experience -p 'test_*.py' -v`。实际已安装 Codex 的无模型脚本、Memory-chan Live Desk 启用方式及边界见[本轮验收记录](acceptance-2026-10-15.md)。
+
+## 2026-10-13 验收工具更新
+
+三协议验收器已覆盖 Chat、Responses、Anthropic；新增请求/输入/输出限制与失败用量记录。回环 fixture 与真实调用分层，未知价格不声明美元硬上限；真实模型与用户客户端仍待验收。候选包增加更正重放、跨 namespace 直接查询/历史隔离及恢复后的历史/证据比对。当前步骤和证据口径见[本轮验收记录](acceptance-2026-10-13.md)。
+
+
+2026-10-09 文档导航：首次使用见[快速开始](quickstart.md)，当前操作见[数据库手册](database-operations.md)，可执行协议示例见[完整工作流](runnable-memory-workflow.md)。实现基线三平台验证与 Windows native / wrapper 区别见[当前状态](project-status.md)；下方分阶段追加记录不代表新的发布批准。
+
 这份文档面向当前在 macOS 上开发、验证和接入 `agent_llm_mm` 的协作者。
 
 ## 1. 环境前提
@@ -67,8 +78,8 @@ cp examples/agent-llm-mm.dev.example.toml agent-llm-mm.local.toml
 `examples/agent-llm-mm.example.toml` 只是通用入口说明，不再承载所有用途。然后编辑 `agent-llm-mm.local.toml`：
 
 - 固定自己的 `database_url`
-- 选择 `provider`
-- dev/mock profile 不需要 API key；选择 `openai-compatible`、`openrouter` 或 prod-local profile 时，才在已忽略的 `agent-llm-mm.local.toml` 里填写 `base_url`、`model`，并二选一配置本机私有 `api_key` 或 `api_key_env`
+- 选择 `provider`；原生 Responses / Messages 的 TOML 段、密钥环境变量和非流式边界见[快速开始](quickstart.md#5-可选原生模型配置)。这些配置无需 live 调用即可用 doctor 检查，离线检查不构成 live certification。
+- dev/mock profile 不需要 API key；选择 `openai-compatible`、`openrouter`、`openai-responses`、`anthropic` 或 prod-local profile 时，才在已忽略的 `agent-llm-mm.local.toml` 里填写 `base_url`、`model`，并二选一配置本机私有 `api_key` 或 `api_key_env`
 
 建议的 macOS SQLite URL 示例；dev、demo、prod-local 必须使用不同文件。按数据生命周期口径，`prod-local` 对应 formal 数据，`dev` / manual profile 对应 test 数据，demo profile 只对应 demo 数据：
 
@@ -288,3 +299,20 @@ port = 8787
 - 正式数据、手工测试数据和 demo 数据必须分开使用不同数据库文件；prod-local 只用于要保留、检查或备份的本地正式数据。
 - 如果多个本机客户端共用同一 SQLite 文件，需要预期 SQLite 单写者模型带来的锁等待和状态互相影响。
 - 所有示例 profile 都保持 `[daemon].enabled = false`；后续 daemon 观察模式必须走单独 gate。
+
+## 2026-10-09 schema-v5 feedback and experience verification
+
+The [A–E runtime guide](memory-feedback-experience.md) describes explicit migration, read-only index inspection/rebuild and new MCP tools. Existing v4 databases require explicit `migrate` before serving; keep the generated backup and restore to a new path. New deterministic checks are `cargo test --test feedback_candidates --test experience_workflow --test indexed_text_recall --test sqlite_lifecycle`. The Python evaluation/capacity scripts accept an existing binary and never require paid model calls; see [methodology](evaluation-methodology.md). Use `python3` on macOS and `python` on Windows, with the native binary suffix. Exact-head platform evidence remains distinct from configured workflows and from formal fresh-machine/release gates.
+
+## Schema v6 temporal/scope/export
+
+Run explicit `migrate` for an existing v5 database; inspect the generated backup and restore only to a new path. [Temporal fields](temporal-metadata.md) keep unknown historical Claim times null and preserve raw timestamps; [Reflection scope](reflection-scope-history.md) never turns effect scope into read authority. [Export](scoped-export.md) is bounded readonly interchange, not a replacement for backup. Verify with `cargo test --test temporal_metadata --test sqlite_temporal_store --test reflection_scope_history --test scoped_ledger_export --test schema6_migration` and `scripts/temporal-scope-export-smoke.py` using the platform's Python and binary path. Rust lifecycle/format/full gates remain required.
+
+
+### Final original-plan context and caller-budget regression
+
+`cargo test --test context_diagnostics --test caller_operation_budget --test mcp_stdio --test schema6_migration` covers scoped rich Episode context, honest bounded diagnostics, optional caller counts/stops over actual local MCP subprocesses, and historical receipt/fingerprint replay across migration. Run the normal full/fmt/Clippy/status-sync gates afterward. The fixed offline evaluator keeps its original tasks and byte budgets; richer metadata costs must be reported rather than hidden by retuning fixtures. See [context](context-diagnostics.md), [caller budget](caller-operation-budget.md), and [module extraction](implementation-module-boundaries.md) contracts.
+
+## Schema v7 global self-model versions
+
+Use explicit `migrate` for older databases, including v6; retain its backup anchor and restore only to a new path. Migration captures current projections as baseline0 with unknown historical effective time. `serve` and index repair never seed or repair the version ledger. See [version contract](self-model-versions.md) and [database operations](database-operations.md). Run `cargo test --test schema7_migration --test self_model_versions --test version_api` and the full/fmt/Clippy/status-sync gates against this source; prior schema6 counts remain historical. Versioned writes and reads reject projection drift. Local deterministic tests are not actual user-client or fresh-machine evidence.

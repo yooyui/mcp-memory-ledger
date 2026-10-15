@@ -16,6 +16,12 @@ use tokio::{
     sync::oneshot,
 };
 
+#[path = "mcp_stdio/caller_budget.rs"]
+mod caller_budget;
+
+#[path = "mcp_stdio/self_model_versions.rs"]
+mod self_model_versions;
+
 #[tokio::test]
 async fn server_exposes_expected_tools_over_stdio() {
     let mut client = test_support::spawn_stdio_client().await.unwrap();
@@ -30,15 +36,37 @@ async fn server_exposes_expected_tools_over_stdio() {
         names,
         vec![
             "build_self_snapshot".to_string(),
+            "build_task_context".to_string(),
+            "commit_feedback_candidate".to_string(),
             "decide_with_snapshot".to_string(),
+            "export_memory".to_string(),
+            "get_episode_detail".to_string(),
             "get_evidence_relation".to_string(),
+            "get_experience_candidate".to_string(),
+            "get_feedback_candidate".to_string(),
+            "get_feedback_target_version".to_string(),
             "get_memory".to_string(),
             "get_reflection_history".to_string(),
             "get_self_model_history".to_string(),
+            "get_self_model_versions".to_string(),
             "ingest_interaction".to_string(),
+            "inspect_retrieval_index".to_string(),
+            "list_episode_details".to_string(),
+            "list_experience_candidates".to_string(),
+            "propose_experience_candidate".to_string(),
+            "propose_feedback_candidate".to_string(),
+            "rebuild_retrieval_index".to_string(),
+            "recall_experience_candidates".to_string(),
+            "recall_memory".to_string(),
+            "record_episode".to_string(),
+            "reject_feedback_candidate".to_string(),
+            "revise_experience_candidate".to_string(),
+            "rollback_experience_candidate".to_string(),
             "run_reflection".to_string(),
             "search_memory".to_string(),
+            "set_experience_candidate_status".to_string(),
             "supersede_memory".to_string(),
+            "validate_feedback_candidate".to_string(),
         ]
     );
 }
@@ -2090,7 +2118,23 @@ async fn search_memory_returns_scoped_claims_with_revision_provenance_over_stdio
     assert_eq!(records[0]["object"], "new");
     assert_eq!(records[0]["mode"], "Observed");
     assert_eq!(records[0]["status"], "Active");
-    assert!(records[0].get("recorded_at").is_none());
+    let replacement_time = chrono::DateTime::parse_from_rfc3339(
+        records[0]["recorded_at"]
+            .as_str()
+            .expect("new replacement has application recording time"),
+    )
+    .unwrap();
+    let audit_time: String =
+        sqlx::query_scalar("SELECT recorded_at FROM reflections WHERE reflection_id = ?")
+            .bind(reflection_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        replacement_time,
+        chrono::DateTime::parse_from_rfc3339(&audit_time).unwrap()
+    );
+    assert!(records[0]["observed_at"].is_null());
     assert_eq!(
         records[0]["provenance"]["evidence_event_references"],
         json!([format!("event:{project_a_event_id}")])
@@ -3273,11 +3317,12 @@ async fn search_memory_union_returns_scoped_mixed_records_and_preserves_event_de
         .iter()
         .map(|record| record["record_type"].as_str().unwrap().to_string())
         .collect::<Vec<_>>();
-    assert_eq!(types, vec!["reflection", "event", "episode", "claim"]);
+    assert_eq!(types, vec!["reflection", "claim", "event", "episode"]);
     assert_eq!(records[0]["id"], reflection_id);
-    assert_eq!(records[1]["id"], format!("event:{event_id}"));
-    assert_eq!(records[2]["id"], "episode:union-stdio-a");
-    assert_eq!(records[3]["id"], format!("claim:{replacement_claim_id}"));
+    assert_eq!(records[1]["id"], format!("claim:{replacement_claim_id}"));
+    assert_eq!(records[1]["recorded_at"], records[0]["recorded_at"]);
+    assert_eq!(records[2]["id"], format!("event:{event_id}"));
+    assert_eq!(records[3]["id"], "episode:union-stdio-a");
     assert!(
         records
             .iter()
@@ -5093,7 +5138,7 @@ required = true
         .expect("client");
 
     let tools = client.list_all_tools().await.expect("list tools");
-    assert_eq!(tools.len(), 10);
+    assert_eq!(tools.len(), 32);
 
     let health: serde_json::Value = reqwest::get(format!("http://127.0.0.1:{port}/api/health"))
         .await
@@ -5172,7 +5217,7 @@ max_concurrent_tasks = 1
             .await
             .unwrap();
     let tools = client.list_all_tools().await.unwrap();
-    assert_eq!(tools.len(), 10);
+    assert_eq!(tools.len(), 32);
 
     client
         .call_tool(
@@ -5767,7 +5812,7 @@ async fn inferred_replacement_reflection_with_evidence_is_accepted_over_stdio() 
                 json!({
                     "event": {
                         "owner": "World",
-                        "namespace": "project/agent-llm-mm",
+                        "namespace": "world",
                         "kind": "Observation",
                         "summary": summary
                     },
@@ -5950,7 +5995,7 @@ async fn reflected_claim_replacement_query_is_accepted_over_stdio() {
                 json!({
                     "event": {
                         "owner": "World",
-                        "namespace": "project/agent-llm-mm",
+                        "namespace": "world",
                         "kind": "Observation",
                         "summary": summary
                     },
@@ -6009,7 +6054,7 @@ async fn reflected_claim_replacement_query_is_accepted_over_stdio() {
                     "mode": "Inferred"
                 },
                 "replacement_evidence_query": {
-                    "namespace": "project/agent-llm-mm",
+                    "namespace": "world",
                     "owner": "World",
                     "kind": "Observation",
                     "limit": 2
@@ -6922,5 +6967,109 @@ mod test_support {
 
     fn sqlite_url(path: &Path) -> String {
         format!("sqlite://{}", path.to_string_lossy().replace('\\', "/"))
+    }
+}
+
+fn native_stdio_response(provider: &str, text: &str) -> Value {
+    if provider == "openai-responses" {
+        json!({"status":"completed", "output":[{"type":"message", "role":"assistant", "status":"completed", "content":[{"type":"output_text", "text":text}]}]})
+    } else {
+        json!({"type":"message", "role":"assistant", "stop_reason":"end_turn", "content":[{"type":"text", "text":text}]})
+    }
+}
+
+fn native_stdio_config(provider: &str, base_url: &str) -> String {
+    let section = provider.replace('-', "_");
+    format!(
+        r#"
+transport = "stdio"
+database_url = "__DATABASE_URL__"
+[model]
+provider = "{provider}"
+[model.{section}]
+base_url = "{base_url}"
+api_key = "native-test-key"
+model = "native-test-model"
+max_tokens = 2048
+timeout_ms = 30000
+"#
+    )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_providers_decide_with_snapshot_over_stdio_from_config() {
+    for (provider, endpoint) in [
+        ("openai-responses", "/responses"),
+        ("anthropic", "/messages"),
+    ] {
+        let stub = test_support::StubServer::spawn(
+            200,
+            native_stdio_response(provider, "native_selected_action"),
+        )
+        .await;
+        let mut client = test_support::spawn_stdio_client_with_config(native_stdio_config(
+            provider,
+            &stub.base_url(),
+        ))
+        .await
+        .unwrap();
+        let _ = client.list_all_tools().await.unwrap();
+        let response = client.call_tool("decide_with_snapshot", json!({
+            "task":"summarize current memory", "action":"read_identity_core",
+            "snapshot":{"identity":["identity:self=architect"], "commitments":[], "claims":["self.role is architect"], "evidence":["event:evt-1"], "episodes":["episode:task-6"]}
+        })).await.unwrap();
+        assert_eq!(
+            response["result"]["structuredContent"]["decision"]["action"], "native_selected_action",
+            "{provider}: {response:?}"
+        );
+        assert_eq!(stub.last_request_path().await.as_deref(), Some(endpoint));
+        assert_eq!(stub.request_count().await, 1);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_providers_ingest_auto_reflection_obeys_gating_over_stdio() {
+    for (provider, endpoint) in [
+        ("openai-responses", "/responses"),
+        ("anthropic", "/messages"),
+    ] {
+        let proposal = r#"{"should_reflect":true,"rationale":"Rollback evidence should tighten commitments.","machine_patch":{"commitment_patch":{"commitments":["prefer:reflect_before_repeating_native_rollback"]}}}"#;
+        let stub =
+            test_support::StubServer::spawn(200, native_stdio_response(provider, proposal)).await;
+        let (mut client, database_url, _database_dir) =
+            test_support::spawn_stdio_client_with_config_and_database(native_stdio_config(
+                provider,
+                &stub.base_url(),
+            ))
+            .await
+            .unwrap();
+        let _ = client.list_all_tools().await.unwrap();
+        client.call_tool("ingest_interaction", json!({
+            "event":{"owner":"Self_", "kind":"Action", "summary":"first native rollback after violating a hard commitment"},
+            "claim_drafts":[], "episode_reference":"episode:native-auto-reflect-0"
+        })).await.unwrap();
+        assert_eq!(
+            stub.request_count().await,
+            0,
+            "{provider}: untriggered ingest must not invoke a model"
+        );
+        let response = client.call_tool("ingest_interaction", json!({
+            "event":{"owner":"Self_", "kind":"Action", "summary":"native rollback after violating a hard commitment"},
+            "claim_drafts":[], "episode_reference":"episode:native-auto-reflect-1", "trigger_hints":["failure", "rollback"]
+        })).await.unwrap();
+        assert_ne!(
+            response["result"]["isError"], true,
+            "{provider}: {response:?}"
+        );
+        let pool = SqlitePool::connect(&database_url).await.unwrap();
+        let reflections = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM reflections")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let commitments = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM commitments WHERE description = 'prefer:reflect_before_repeating_native_rollback'").fetch_one(&pool).await.unwrap();
+        assert_eq!(reflections, 1, "{provider}");
+        assert_eq!(commitments, 1, "{provider}");
+        assert_eq!(stub.request_count().await, 1);
+        assert_eq!(stub.last_request_path().await.as_deref(), Some(endpoint));
     }
 }

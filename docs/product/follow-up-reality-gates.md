@@ -5,7 +5,7 @@ planning-only, or not-yet-merged status. It is intentionally stricter than the
 roadmap: a module is treated as complete only when the implementation, fresh
 evidence, and product wording all line up.
 
-Current baseline:
+Historical consolidation baseline (current runtime additions follow below):
 
 - consolidation baseline: `1f7390d`, derived from `dev-work@6fcbb5f`; the
   active work branch is intentionally not frozen in this status document, and
@@ -18,6 +18,54 @@ Current baseline:
   write path
 - Local Product Alpha is still in progress until every release gate has fresh,
   reviewable evidence and a human release decision
+
+## 2026-10-10 bounded schema7 self-model continuation
+
+The current local code adds append-only global identity/commitment versions,
+truthful initialization/migration baselines, verified source-scoped ordered diffs,
+expected-version guards and explicit component-selective compensating rollback.
+See [contract](../self-model-versions.md). Existing scoped history/export never gain
+aggregate snapshots. Rollback still requires an existing Claim anchor, explicit
+matching origin, supplied durable evidence, confirmation and request key. Global
+writes/reads fail closed on projection drift; this is neither tenant auth nor
+broader autonomy. Migration, atomicity and privacy tests apply to this source;
+independent review and exact-commit CI remain separately verified gates. Older
+missing-version descriptions below are historical, not a current absence claim.
+
+| Stage | Workstream | Status | Current evidence and boundary |
+| --- | --- | --- | --- |
+| `M3` | M3.1.1 Bounded Global Self-Model Versions | `implemented` | Local 673 all-feature Rust tests, source-safe reads/rollback, migration and nonbaseline backup/restore; [stage report](../plans/2026-10-10-schema7-results.md). This bounded code completion does not approve a release, tenant auth or autonomy. |
+
+## 2026-10-10 packaging and wrapper continuation
+
+A source-bound native portable archive builder and strict unpack verifier now
+provide an executable per-platform build path, rather than inspecting only
+pre-existing archives. PowerShell wrapper behavior has a fail-closed executable
+harness in Windows CI. See [portable packages](../portable-packages.md) and the
+[current status](../project-status.md). Each new commit still needs its own green
+checks. Older missing-builder / unexecuted-wrapper descriptions below record the
+historical baseline; they do not override these new implementation contracts.
+
+Exact head `0ca8bccc64cadb3f1eae9d1a74bad602a1c60bc9` passed
+[three-platform CI](https://github.com/yooyui/mcp-memory-ledger/actions/runs/38035347484),
+including native archive build/unpack checks and the Windows PowerShell 7.6.6
+wrapper harness. This supersedes the historical unexecuted-wrapper gap for those
+configured hosts only; later heads still need their own exact CI.
+
+Local and CI unpack tests remain controlled installation simulations. Real user
+client acceptance, fresh-machine timing, live provider authorization/evidence,
+and human release approval remain open. No artifact upload, release, tag,
+installer, service-manager or auto-updater is introduced by this slice. The old
+broad packaging-preflight remains separate and cannot certify this per-platform
+builder as a complete production release.
+
+## 2026-10-09 current runtime additions
+
+The current draft branch has implemented scoped corrections/retry receipts, schema-v5 feedback candidates, FTS5 retrieval and inert versioned experience candidates. Exact head9a9d3be passed all three platform jobs; the source-specific logs/manifests are linked from the draft PR and evaluation evidence. This is not Alpha approval.
+
+The schema-v6 slice further implements nullable historical Claim recording time, independent caller observation time, normalized nanosecond keys, durable Reflection origin/effect and evidence relations, safe targetless reads and bounded readonly export. Its fresh validation is tracked separately; prior v5 metrics do not certify the changed source. Export preserves complete safe Claim-source closure by omitting unsafe records and their dependent graph, not silently dropping half a Claim's evidence. Broader global self-model rollback, destructive retention policies, user-client/fresh-machine/package and real-model efficacy gates remain distinct.
+
+The older blocker lists below describe the original planning baseline where explicitly historical. They cannot be used to claim current scoped correction, record-only scope metadata, or inert experience candidates are absent.
 
 ## 2026-07-10 Replan Blockers
 
@@ -51,9 +99,7 @@ broader autonomy work even when an older productization slice is marked
   supporting-Episode counting is now scope-bound, Claim search/get hide
   mixed-scope revision edges in full, and new writes reject `Owner::Unknown` while
   read-only doctor inventories leftover Unknown rows. Evidence-relation runtime
-  read and a scoped cross-type union now exist. Identity/commitment history,
-  record-only reflection history, and audited
-  supersession/correction tools remain unimplemented.
+  read and a scoped cross-type union now exist. Scoped identity/commitment audit and correction tools are implemented; safely attributed record-only Reflection history is added in v6. A versioned global identity/commitment rollback ledger remains outside those contracts.
 - `partial`: Linux/macOS repository CI and end-to-end stderr tracing now exist,
   but executable packaging and real fresh-machine/Windows evidence remain
   incomplete.
@@ -106,8 +152,7 @@ tests, docs, fresh evidence, and review:
   reports missing binary / installer / service evidence, but installer, binary
   package, service manager, auto-updater, Windows/fresh-machine evidence,
   Beta/GA evidence, and production-ready claims remain blocked.
-- `partial`: Multi-layer memory; current support is read-only projection only,
-  including richer memory semantics status projection, not procedural memory,
+- `partial`: Multi-layer memory; legacy projections remain read-only, while v5/v6 provide explicit inert semantic/procedural candidates and richer Episodes. This does not establish procedural execution,
   slow variables, durable self-model writes, or complete multi-layer cognition.
 - `blocked claim`: Physics-informed runtime, solver/controller behavior,
   constraint optimizer, physical controller, and scientific validation claims
@@ -143,8 +188,8 @@ tests, docs, fresh evidence, and review:
 | `M1` | M1.2.1 Scoped Event Lookup | `implemented` | The additive `get_memory` tool resolves one stable Event ID only inside the required namespace and returns the same complete Event/provenance shape as search. Missing and cross-scope IDs both return `record: null`; Claim lookup is tracked separately in M1.2.2, while episode/reflection records and history remain unimplemented. | Preserve the shared scoped read service and null/no-widening behavior; do not turn lookup misses into unscoped existence probes. | focused `mcp_stdio` get-memory, tool-list, and schema tests; `cargo test --test status_sync`; `./scripts/status-sync-check.sh`. |
 | `M1` | M1.2.2 Scoped Claim Lookup | `implemented` | `get_memory(namespace, id, record_type?)` preserves Event behavior when type is omitted and uses explicit `record_type = Claim` for canonical/raw Claim IDs, avoiding ambiguity with legacy raw Event IDs such as `claim:*`. It returns the same status/mode/provenance shape as Claim search without applying the search default-Active filter, so Active, Disputed, and Superseded claims remain addressable. Missing and cross-scope Claim IDs return `record: null`; mixed-scope revision-edge metadata redaction is covered by M1.0.2. | Preserve explicit Claim type selection, omitted-type Event compatibility, the shared SQL scope narrowing, provider-free reads, and null/no-widening behavior. Do not claim episode/reflection lookup, complete history, correction, or the M1 exit gate. | focused get-memory DTO compatibility tests; `cargo test --test mcp_stdio search_memory_returns_scoped_claims_with_revision_provenance_over_stdio -v`; focused Event get-memory compatibility and schema tests; `cargo test --test status_sync -v`; `./scripts/status-sync-check.sh`. |
 | `M1` | M1.2.3 Scoped Claim Reflection History | `implemented` | The seventh MCP tool, `get_reflection_history(namespace, claim_reference, limit?)`, accepts canonical/raw Claim anchors and returns the newest-first bidirectional revision chain reachable inside one explicit scope. The default limit is 20 and the valid range is 1–100; missing/cross-scope anchors are empty, mixed-scope edges are hidden in full, and evidence is reduced to same-scope canonical references. | Keep the path read-only and provider-free, with operation metadata limited to history type, result count, and `has_more`. Do not claim identity/commitment history, record-only reflections, episode/reflection lookup, correction, or the M1 exit gate. No schema migration/index landed; retain the MVP table-scan performance boundary until explain/benchmark evidence justifies an index. | `cargo test --test sqlite_store sqlite_claim_reflection_history -v`; `cargo test --test evidence_query_dto get_reflection_history -v`; focused scoped-Claim, invalid/reconnect, tool-list, and schema `mcp_stdio` tests; `./scripts/test-tier.sh fast`; `./scripts/test-tier.sh core`; `cargo test --test status_sync -v`; `./scripts/status-sync-check.sh`. |
-| `M1` | M1.3.0 Current-Schema Structural Readback Gate | `partial` | Lifecycle inspection verifies version, required tables, migration ledger, current FK violations, and selected data counts, but not the expected columns, constraints, key shapes, or indexes. A weakened same-version schema can still report `current`. | Before schema-changing M1 work and real-client closure, verify key structures through `table_info`, `foreign_key_list`, index/DDL fingerprint or an equivalently explicit contract. Pure read-only no-schema slices are not blocked by this gate alone. | Negative lifecycle fixture with the current version/ledger but weakened structure must not report `current`; positive fresh/current/migrated fixtures remain green. |
-| `M2` | M2.0.1 Exclusive Init-and-Migration Lifecycle Gate | `planning-gate` | Init uses a non-atomic existence check and failure cleanup, while migration moving-target checks compare version and row counts; concurrent operations or equal-row-count updates are not fully excluded. | Require exclusive init/migrate or explicit concurrent rejection, clean up only files attributable to the current init, and use locking or stronger change detection across backup/rehearsal/migration. Move the relevant part earlier if any M1 slice adds a migration. | Concurrent init/migrate tests, equal-row-count update test, backup/readback preservation, and documented offline-exclusive behavior until implemented. |
+| `M1` | M1.3.0 Current-Schema Structural Readback Gate | `implemented` | Read-only, snapshot-consistent inspection fingerprints canonical DDL, columns, foreign keys and indexes; weakened same-version schemas fail closed. | Explicit repair required for schema_structure_invalid; no automatic repair or version bump. | tests/sqlite_lifecycle.rs covers weakened CHECK/FK, missing columns/keys, index drift, fresh/current and v2 migrated fixtures. |
+| `M2` | M2.0.1 Exclusive Init-and-Migration Lifecycle Gate | `implemented` | Atomic create_new reserves init path; failure never deletes another creator database or sidecars. SQLite write reservation covers backup, rehearsal and migration, including WAL writers. | Failed init files remain for explicit diagnosis; migration uses bounded lock wait/rejection. | tests/sqlite_lifecycle.rs covers concurrent init, foreign sidecars, external same-count updates, restore/readback preservation. |
 | `P0` | Local Alpha evidence summary | `implemented` | Mainline previously had no single read-only rollup to distinguish open, not-verified, and satisfied gates. The summary now also exposes `external_blockers`, `human_blockers`, `unimplemented_capability_blockers`, and a separate `first_run_simulation` gate so local simulation does not masquerade as real fresh-machine evidence. | Keep `scripts/local-alpha-evidence-summary.sh`, `src/bin/local_alpha_evidence_summary.rs`, `src/support/local_alpha_evidence.rs`, and `tests/local_alpha_release_evidence.rs` behind `release-tools`; run it after every release-gate refresh. Do not treat blocker rows or simulation rows as generated external evidence. | `cargo test --features release-tools --test local_alpha_release_evidence -v`; `cargo run --quiet --features release-tools --bin local_alpha_evidence_summary -- --evidence-root .` |
 | `P0` | Local Alpha release-gate refresh | `implemented` | Manual refresh could skip product smoke, first-run simulation, support bundle, or summary output, leaving stale gate evidence. | Use `scripts/local-alpha-release-gate-refresh.sh [config_path]` to refresh the locally reproducible gate slice; keep missing real fresh-machine, Windows runner, remote/team, and release-decision evidence open. | `bash -n scripts/local-alpha-release-gate-refresh.sh`; `cargo test --features release-tools --test local_alpha_release_evidence -v`; optional manual run writes `target/reports/local-alpha/evidence-summary.json`. |
 | `P0` | Local Alpha full release gate | `partial` | Product smoke, first-run simulation, support bundle, and summary can now be refreshed together locally, but Windows parity, real fresh-machine evidence, and release decision evidence can still be missing. | Run the refresh script for local evidence, then separately record real fresh-machine and Windows runner evidence without claiming completion from local simulation artifacts. | `./scripts/local-alpha-release-gate-refresh.sh`; evidence summary JSON showing every gate state; separate real fresh-machine and Windows parity summaries before human release review. |
@@ -230,3 +275,11 @@ evidence, does not prove Windows runner parity, and does not change the
 
 The wrapper also rejects an unexpected root-level `not-a-sqlite-url` artifact,
 so the archived SQLite fixture cannot silently re-enter the current tree.
+
+
+| Milestone | Plan item | Status | Implemented boundary | Limits | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| `M1` | M1.2.8 Transactional Corrections and Durable Replay | `implemented` | Transactional scope/state/evidence checks, CAS and atomic hash/result receipts; scoped retries preserve IDs and skip auto-reflection. | Legacy global self-model governance stays experimental; namespace is not authentication; no unkeyed at-most-once claim. | tests/correction_atomicity.rs, application/failure/MCP regressions. |
+| `M1` | M1.2.9 Structured Feedback Provenance | `implemented` | Optional bounded Event metadata, transactional exact-scope evidence, explicit v4 migration. | Caller-supplied provenance is not authenticated truth or execution authority. | tests/feedback_provenance.rs and installed-binary MCP workflow. |
+| `M1` | M1.2.10 Offline Bilingual Literal Recall | `implemented` | Scope-filtered active Claims and Events, short CJK literal matching, stable claims-first ranking, complete provenance. | Table scan, no embeddings/fuzzy/Unicode-folding or broad latency claims. | Fixed bilingual SQLite unit fixture with decoys, punctuation, old claims and event floods. |
+| `M1` | M1.2.11 Byte-Bounded Task Context | `implemented` | Complete compact result JSON UTF-8 budget including metadata/size; whole records and omission counts. | Excludes JSON-RPC envelope; not token cap; empty envelope must fit. | Unit budget sweep, exact boundary/UTF-8/large-record tests and MCP smoke. |
