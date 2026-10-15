@@ -30,7 +30,9 @@ target/reports/self-revision-demo/<timestamp>/
 ./scripts/run-self-revision-demo.sh target/reports/self-revision-demo/latest
 ```
 
-脚本会先构建本地二进制，再运行 `run_self_revision_demo`。demo runner 会启动本地 deterministic `openai-compatible` stub provider，并通过真实 MCP `stdio` 服务调用现有 4 个 tool。
+脚本会先构建本地二进制，再运行 `run_self_revision_demo`。demo runner 会启动本地 deterministic `openai-compatible` stub provider，并通过真实 MCP `stdio` 服务调用写入 / 快照 / 决策 / 反思这 4 个既有 tool。当前运行时另有 `search_memory` / `get_memory` / history / `supersede_memory` 等读取与纠错工具，但不在该旧 demo story 内。
+
+`decision-before.json` 会在 reflection 写入前通过真实 `decide_with_snapshot` 调用生成；`decision-after.json` 会在 reflection 写入并重新构建 snapshot 后生成。两次调用都读取调用时刻的服务端 commitment store，不依赖在修订后回放旧 snapshot 来制造 before / after 差异。
 
 ## 产物
 

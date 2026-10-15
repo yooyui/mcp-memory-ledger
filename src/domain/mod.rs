@@ -1,10 +1,17 @@
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DomainError {
     InsufficientEvidence,
+    InvalidClaimReference,
+    InvalidEventReference,
     InvalidNamespace,
     NamespaceOwnerMismatch,
+    UnknownOwnerNotWritable,
+    InvalidSnapshotTimeWindow,
+    InvalidFeedbackMetadata,
+    InvalidObservedAt,
 }
 
+pub mod caller_budget;
 pub mod claim;
 pub mod commitment;
 pub mod episode;
@@ -21,3 +28,16 @@ pub mod rules;
 pub mod self_revision;
 pub mod snapshot;
 pub mod types;
+
+pub mod feedback;
+
+pub mod experience;
+pub mod feedback_candidate;
+
+pub mod temporal;
+
+pub mod reflection_scope;
+
+pub mod ledger_export;
+
+pub mod self_model_version;

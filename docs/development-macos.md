@@ -1,15 +1,28 @@
 # macOS 开发与接入指南
 
+## 2026-10-15 体验与客户端验收
+
+仓库根目录执行 `python3 -E -s -B tools/experience/run.py`（或双击 `tools/experience/Start-Retest.command`）：用户一次隐藏输入后执行定向→全量复测，并自动打开本机动态端口实时网页。无凭据检查用 `python3 -E -s -B -m unittest discover -s tools/experience -p 'test_*.py' -v`。实际已安装 Codex 的无模型脚本、Memory-chan Live Desk 启用方式及边界见[本轮验收记录](acceptance-2026-10-15.md)。
+
+## 2026-10-13 验收工具更新
+
+三协议验收器已覆盖 Chat、Responses、Anthropic；新增请求/输入/输出限制与失败用量记录。回环 fixture 与真实调用分层，未知价格不声明美元硬上限；真实模型与用户客户端仍待验收。候选包增加更正重放、跨 namespace 直接查询/历史隔离及恢复后的历史/证据比对。当前步骤和证据口径见[本轮验收记录](acceptance-2026-10-13.md)。
+
+
+2026-10-09 文档导航：首次使用见[快速开始](quickstart.md)，当前操作见[数据库手册](database-operations.md)，可执行协议示例见[完整工作流](runnable-memory-workflow.md)。实现基线三平台验证与 Windows native / wrapper 区别见[当前状态](project-status.md)；下方分阶段追加记录不代表新的发布批准。
+
 这份文档面向当前在 macOS 上开发、验证和接入 `agent_llm_mm` 的协作者。
 
 ## 1. 环境前提
 
-- 已安装 Rust toolchain
+- 已安装 `rustup`；仓库会通过 `rust-toolchain.toml` 选择 Rust `1.95.0`，并安装 `rustfmt` / `clippy` 组件
 - `cargo` 可用
 - 使用 `zsh` 或 `bash`
 - 当前仓库内提供 macOS 原生入口脚本：
   - `./scripts/agent-llm-mm.sh bootstrap-local`
-  - `./scripts/agent-llm-mm.sh doctor`
+  - `./scripts/agent-llm-mm.sh init`
+  - `./scripts/agent-llm-mm.sh doctor --read-only`
+  - `./scripts/agent-llm-mm.sh migrate`
   - `./scripts/agent-llm-mm.sh serve`
   - `./scripts/run-self-revision-demo.sh`
   - `./scripts/generate-support-bundle.sh`
@@ -23,6 +36,15 @@ cd ~/code/agent-llm-mm
 ```
 
 请按你的本机实际路径替换上面的示例目录。
+
+进入仓库后先确认当前固定工具链：
+
+```zsh
+rustc --version
+cargo --version
+```
+
+`rustc` 应报告 `1.95.0`。支持下限与升级规则见 [Rust Toolchain Policy](toolchain-policy.md)；不要只改 `Cargo.toml` 或只改 `rust-toolchain.toml`。
 
 ## 3. 准备本地配置
 
@@ -56,8 +78,8 @@ cp examples/agent-llm-mm.dev.example.toml agent-llm-mm.local.toml
 `examples/agent-llm-mm.example.toml` 只是通用入口说明，不再承载所有用途。然后编辑 `agent-llm-mm.local.toml`：
 
 - 固定自己的 `database_url`
-- 选择 `provider`
-- dev/mock profile 不需要 API key；选择 `openai-compatible`、`openrouter` 或 prod-local profile 时，才在已忽略的 `agent-llm-mm.local.toml` 里填写 `base_url`、`model`，并二选一配置本机私有 `api_key` 或 `api_key_env`
+- 选择 `provider`；原生 Responses / Messages 的 TOML 段、密钥环境变量和非流式边界见[快速开始](quickstart.md#5-可选原生模型配置)。这些配置无需 live 调用即可用 doctor 检查，离线检查不构成 live certification。
+- dev/mock profile 不需要 API key；选择 `openai-compatible`、`openrouter`、`openai-responses`、`anthropic` 或 prod-local profile 时，才在已忽略的 `agent-llm-mm.local.toml` 里填写 `base_url`、`model`，并二选一配置本机私有 `api_key` 或 `api_key_env`
 
 建议的 macOS SQLite URL 示例；dev、demo、prod-local 必须使用不同文件。按数据生命周期口径，`prod-local` 对应 formal 数据，`dev` / manual profile 对应 test 数据，demo profile 只对应 demo 数据：
 
@@ -67,24 +89,26 @@ database_url = "sqlite:///Users/<you>/Library/Application%20Support/agent-llm-mm
 
 ## 4. 本机预检
 
-本地产品化启动顺序是 bootstrap / config first, doctor second：先准备本机配置，再让 `doctor` 证明配置、SQLite 路径、provider 形态和 daemon 默认状态可用，最后启动 `serve`。仓库入口脚本的契约固定为 `[serve|doctor|bootstrap-local] [config_path]`；没有 `doctor-config` 或 `serve-config` alias，传入其它 mode 会返回 exit code `2`。
+本地产品化启动顺序是 config → explicit init/migrate → read-only doctor → serve。新库执行 `init`；旧库先用 `doctor --read-only` 查看状态，再显式 `migrate`。`serve` 和默认 `doctor` 都不会隐式 bootstrap。入口模式是 `serve|init|migrate|doctor|bootstrap-local`；doctor 可选 `--read-only`（默认）或显式 `--allow-bootstrap`。
 
 优先使用仓库内脚本：
 
 ```zsh
-./scripts/agent-llm-mm.sh doctor
+./scripts/agent-llm-mm.sh init
+./scripts/agent-llm-mm.sh doctor --read-only
 ```
 
 示例 profile 是结构模板，包含占位 `database_url`。先复制到 `agent-llm-mm.local.toml`，替换为本机可写 SQLite 路径后，再检查本机私有配置；如果选择 prod-local profile，还必须同时替换 `base_url`、`model`，并配置本机私有 `api_key` 或 `api_key_env`：
 
 ```zsh
-./scripts/agent-llm-mm.sh doctor agent-llm-mm.local.toml
+./scripts/agent-llm-mm.sh init agent-llm-mm.local.toml
+./scripts/agent-llm-mm.sh doctor --read-only agent-llm-mm.local.toml
 ```
 
 如果你想绕过脚本，也可以：
 
 ```zsh
-cargo run --quiet --bin agent_llm_mm -- doctor
+cargo run --quiet --bin agent_llm_mm -- doctor --read-only
 ```
 
 预期输出为 JSON，至少包含：
@@ -92,6 +116,7 @@ cargo run --quiet --bin agent_llm_mm -- doctor
 - `transport`
 - `database_url`
 - `provider`
+- `database_lifecycle`
 - `status`
 
 如需记录“本地首启模拟”证据，可以运行：
@@ -106,7 +131,7 @@ cargo run --quiet --bin agent_llm_mm -- doctor
 ./scripts/first-run-bootstrap-smoke-local.sh target/first-run-bootstrap-smoke/manual-check
 ```
 
-该脚本会在隔离输出目录内调用 `bootstrap-local`，把生成配置的 `database_url` 改成同目录下的 `first-run.sqlite`，再运行 `doctor` 并写出 `doctor.json` / `summary.json`。它会清理 `AGENT_LLM_MM_CONFIG` / `AGENT_LLM_MM_DATABASE_URL` 干扰，不写真实 HOME，不启动 `serve`，不调用 `product-smoke-local.sh`，也不证明真实 fresh-machine install 或 Windows runtime parity。
+该脚本会在隔离输出目录内调用 `bootstrap-local`，把生成配置的 `database_url` 改成同目录下的 `first-run.sqlite`，再显式运行 `init` 与 `doctor --read-only`，并写出 `init.json` / `doctor.json` / `summary.json`。它会清理环境变量干扰，不写真实 HOME，不启动 `serve`，不调用 product smoke，也不证明真实 fresh-machine install 或 Windows runtime parity。
 
 ## 5. 启动 MCP 服务
 
@@ -149,14 +174,20 @@ transport = "stdio"
 ```zsh
 cargo fmt --check
 git diff --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test
-./scripts/agent-llm-mm.sh doctor
+cargo clippy --all-targets -- -D warnings
+./scripts/test-tier.sh fast
+./scripts/test-tier.sh core
+./scripts/status-sync-check.sh
+./scripts/agent-llm-mm.sh doctor --read-only
 ```
+
+涉及发布证据、打包或 provider certification 工具时，再运行
+`cargo clippy --all-targets --all-features -- -D warnings` 和
+`./scripts/test-tier.sh full`。`release-tools` 不进入默认运行时构建。
 
 发布前请按 [Release Gate](release-gate.md) 跑完整 gate；本节只是 macOS 日常验证入口。
 如果判断 Local Product Alpha / product alpha 口径，还必须改用 [Local Alpha Release Gate](product/release-gate-local-alpha.md)；普通 `doctor` 通过不等于 Local Alpha 完成。
-需要本机 release soak 证据时，可以运行 `./scripts/release-soak-local.sh <candidate-name> [config_path]`。该命令写入 `target/reports/releases/<candidate-name>/`，只生成本机候选证据，不生成真实 fresh-machine、Windows runner、remote/team、上传、tag、安装包或发布认证证据。
+需要本机 release soak 证据时，可以运行 `./scripts/release-soak-local.sh <candidate-name> [config_path]`。该命令把数据库操作强制绑定到 `target/release-soak-runtime/<candidate-name>/release-soak.sqlite`，先显式 init，再只读 doctor；传入配置中的数据库路径不会成为 soak 写目标。它仍只生成本机候选证据，不生成真实 fresh-machine、Windows runner、remote/team、上传、tag、安装包或发布认证证据。
 
 如果需要检查 provider live evidence preflight 缺口，先运行本地只读 preflight：
 
@@ -187,7 +218,8 @@ cargo test
 
 | Symptom | Likely Cause | Verification | Fix |
 | --- | --- | --- | --- |
-| `doctor` cannot write SQLite | database path not writable or sandbox restriction | 先检查 `agent-llm-mm.local.toml` 的 `database_url` 与启动环境里的 `AGENT_LLM_MM_DATABASE_URL`；如果 `doctor` 已返回 JSON，再核对其中的 `database_url` | 设置 `AGENT_LLM_MM_DATABASE_URL` 为可写 SQLite URL / 文件路径，或在本地 TOML 固定可写 SQLite 路径后重试 |
+| `init` / `migrate` cannot write SQLite | database path not writable or sandbox restriction | 先用 `doctor --read-only` 查看 `database_lifecycle`，再检查 config 与 `AGENT_LLM_MM_DATABASE_URL` | 为显式 lifecycle command 设置可写 SQLite URL；不要为通过 doctor 而放宽正式库权限 |
+| `serve` reports database not ready | database missing, stale, or runtime defaults incomplete | 运行 `doctor --read-only` 查看 status / schema version | missing 用 `init`；旧 schema 用 `migrate`；只有明确接受写入时才用 `doctor --allow-bootstrap` |
 | MCP client starts the wrong binary | auxiliary `src/bin` target ambiguity | 检查客户端配置是否已显式带 `--bin agent_llm_mm`（如 `args = ["run", "--quiet", "--bin", "agent_llm_mm", "--", "serve"]`） | 使用 `agent-llm-mm.sh` 封装，或在客户端里固定 `cargo run --quiet --bin agent_llm_mm -- serve` |
 | dashboard not visible | `[dashboard].enabled` 为 false，或端口不可用 | 查看配置里的 `[dashboard]` 与 `enabled`，并确认 `./scripts/agent-llm-mm.sh doctor` 输出中的 dashboard 信息 | 启用 `[dashboard].enabled = true`，并换到可用的 `127.0.0.1` localhost 端口 |
 | model calls fail | provider 配置不完整 | 执行 `./scripts/agent-llm-mm.sh doctor`，确认 `provider`、`base_url`、`model` 均已回填 | 更新本地 TOML 的 provider 段；密钥只在本地文件里设置，不要提交 secrets |
@@ -251,7 +283,7 @@ port = 8787
 ./scripts/agent-llm-mm.sh serve
 ```
 
-浏览器访问 `http://127.0.0.1:8787/`。该面板只读，不会调用 `run_reflection` 或修改 SQLite。保持 `host = "127.0.0.1"` 作为本机使用边界；`base_path = "/agent-llm-mm"` 只表示路径挂载，不是认证、授权或公网暴露控制。不要在没有单独产品化 gate / auth 决策前把 dashboard 暴露到公网反向代理。
+浏览器访问 `http://127.0.0.1:8787/`。该面板只读，不会调用 `run_reflection` 或修改 SQLite。启用 dashboard 时，配置校验只接受 `localhost` 或 loopback IP；`0.0.0.0`、LAN IP 和域名会在启动前被拒绝。`base_path = "/agent-llm-mm"` 只表示路径挂载，不是认证、授权或公网暴露控制。不要在没有单独产品化 gate / auth 决策前把 dashboard 暴露到公网反向代理。
 
 当前面板标题为 `Memory-chan Live Desk`，内嵌两份生成图物料：
 
@@ -267,3 +299,20 @@ port = 8787
 - 正式数据、手工测试数据和 demo 数据必须分开使用不同数据库文件；prod-local 只用于要保留、检查或备份的本地正式数据。
 - 如果多个本机客户端共用同一 SQLite 文件，需要预期 SQLite 单写者模型带来的锁等待和状态互相影响。
 - 所有示例 profile 都保持 `[daemon].enabled = false`；后续 daemon 观察模式必须走单独 gate。
+
+## 2026-10-09 schema-v5 feedback and experience verification
+
+The [A–E runtime guide](memory-feedback-experience.md) describes explicit migration, read-only index inspection/rebuild and new MCP tools. Existing v4 databases require explicit `migrate` before serving; keep the generated backup and restore to a new path. New deterministic checks are `cargo test --test feedback_candidates --test experience_workflow --test indexed_text_recall --test sqlite_lifecycle`. The Python evaluation/capacity scripts accept an existing binary and never require paid model calls; see [methodology](evaluation-methodology.md). Use `python3` on macOS and `python` on Windows, with the native binary suffix. Exact-head platform evidence remains distinct from configured workflows and from formal fresh-machine/release gates.
+
+## Schema v6 temporal/scope/export
+
+Run explicit `migrate` for an existing v5 database; inspect the generated backup and restore only to a new path. [Temporal fields](temporal-metadata.md) keep unknown historical Claim times null and preserve raw timestamps; [Reflection scope](reflection-scope-history.md) never turns effect scope into read authority. [Export](scoped-export.md) is bounded readonly interchange, not a replacement for backup. Verify with `cargo test --test temporal_metadata --test sqlite_temporal_store --test reflection_scope_history --test scoped_ledger_export --test schema6_migration` and `scripts/temporal-scope-export-smoke.py` using the platform's Python and binary path. Rust lifecycle/format/full gates remain required.
+
+
+### Final original-plan context and caller-budget regression
+
+`cargo test --test context_diagnostics --test caller_operation_budget --test mcp_stdio --test schema6_migration` covers scoped rich Episode context, honest bounded diagnostics, optional caller counts/stops over actual local MCP subprocesses, and historical receipt/fingerprint replay across migration. Run the normal full/fmt/Clippy/status-sync gates afterward. The fixed offline evaluator keeps its original tasks and byte budgets; richer metadata costs must be reported rather than hidden by retuning fixtures. See [context](context-diagnostics.md), [caller budget](caller-operation-budget.md), and [module extraction](implementation-module-boundaries.md) contracts.
+
+## Schema v7 global self-model versions
+
+Use explicit `migrate` for older databases, including v6; retain its backup anchor and restore only to a new path. Migration captures current projections as baseline0 with unknown historical effective time. `serve` and index repair never seed or repair the version ledger. See [version contract](self-model-versions.md) and [database operations](database-operations.md). Run `cargo test --test schema7_migration --test self_model_versions --test version_api` and the full/fmt/Clippy/status-sync gates against this source; prior schema6 counts remain historical. Versioned writes and reads reject projection drift. Local deterministic tests are not actual user-client or fresh-machine evidence.

@@ -2,17 +2,22 @@
 name = "agent_llm_mm"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.95"
 authors = ["yooyui"]
 license = "Apache-2.0"
 repository = "https://github.com/yooyui/mcp-memory-ledger"
 readme = "README.md"
+
+[features]
+default = []
+release-tools = ["dep:flate2", "dep:tar", "dep:zip"]
 
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
 axum = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
-flate2 = "1"
+flate2 = { version = "1", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rmcp = { version = "0.5", features = ["transport-io"] }
 schemars = "1"
@@ -20,7 +25,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite"] }
-tar = { version = "0.4", default-features = false }
+tar = { version = "0.4", default-features = false, optional = true }
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
@@ -28,7 +33,115 @@ toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["serde", "v4"] }
-zip = { version = "2", default-features = false }
+zip = { version = "2", default-features = false, optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+
+[[bin]]
+name = "agent_llm_mm"
+path = "src/main.rs"
+test = false
+
+[[bin]]
+name = "demo_openai_compatible_stub"
+path = "src/bin/demo_openai_compatible_stub.rs"
+test = false
+
+[[bin]]
+name = "generate_support_bundle"
+path = "src/bin/generate_support_bundle.rs"
+test = false
+
+[[bin]]
+name = "local_alpha_evidence_summary"
+path = "src/bin/local_alpha_evidence_summary.rs"
+required-features = ["release-tools"]
+test = false
+
+[[bin]]
+name = "packaging_archive_evidence"
+path = "src/bin/packaging_archive_evidence.rs"
+required-features = ["release-tools"]
+test = false
+
+[[bin]]
+name = "packaging_preflight_check"
+path = "src/bin/packaging_preflight_check.rs"
+required-features = ["release-tools"]
+test = false
+
+[[bin]]
+name = "product_readiness_check"
+path = "src/bin/product_readiness_check.rs"
+required-features = ["release-tools"]
+test = false
+
+[[bin]]
+name = "provider_certification_check"
+path = "src/bin/provider_certification_check.rs"
+required-features = ["release-tools"]
+test = false
+
+[[bin]]
+name = "provider_live_certification_run"
+path = "src/bin/provider_live_certification_run.rs"
+required-features = ["release-tools"]
+test = false
+
+[[bin]]
+name = "release_decision_local"
+path = "src/bin/release_decision_local.rs"
+required-features = ["release-tools"]
+test = false
+
+[[bin]]
+name = "release_evidence_index"
+path = "src/bin/release_evidence_index.rs"
+required-features = ["release-tools"]
+test = false
+
+[[bin]]
+name = "run_self_revision_demo"
+path = "src/bin/run_self_revision_demo.rs"
+test = false
+
+[[bin]]
+name = "status_sync_check"
+path = "src/bin/status_sync_check.rs"
+test = false
+
+[[test]]
+name = "local_alpha_external_evidence"
+path = "tests/local_alpha_external_evidence.rs"
+required-features = ["release-tools"]
+
+[[test]]
+name = "local_alpha_release_evidence"
+path = "tests/local_alpha_release_evidence.rs"
+required-features = ["release-tools"]
+
+[[test]]
+name = "non_mvp_product_tracks"
+path = "tests/non_mvp_product_tracks.rs"
+required-features = ["release-tools"]
+
+[[test]]
+name = "packaging_archive"
+path = "tests/packaging_archive.rs"
+required-features = ["release-tools"]
+
+[[test]]
+name = "product_readiness"
+path = "tests/product_readiness.rs"
+required-features = ["release-tools"]
+
+[[test]]
+name = "provider_live_certification"
+path = "tests/provider_live_certification.rs"
+required-features = ["release-tools"]
+
+[[test]]
+name = "release_decision"
+path = "tests/release_decision.rs"
+required-features = ["release-tools"]

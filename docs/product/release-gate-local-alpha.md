@@ -14,7 +14,7 @@ Run the same baseline commands from a clean, reviewable working tree:
 cargo fmt --check
 git diff --check
 cargo clippy --all-targets --all-features -- -D warnings
-cargo test
+./scripts/test-tier.sh full
 ./scripts/agent-llm-mm.sh doctor
 ```
 
@@ -22,12 +22,12 @@ Expected evidence:
 
 - formatting and whitespace checks exit with code `0`
 - `cargo clippy` exits with code `0` and no warnings
-- `cargo test` exits with code `0`
+- `./scripts/test-tier.sh full` exits with code `0`
 - `doctor` reports `status = ok`
 - `doctor` continues to report `self_revision_write_path = run_reflection`
 - `doctor` does not expose provider secrets
 - bootstrap documentation remains config-first then doctor-second, and wrapper
-  scripts keep the `[serve|doctor|bootstrap-local] [config_path]` contract with
+  scripts keep the `serve|init|migrate|doctor|bootstrap-local` contract with
   unsupported modes returning exit code `2`
 - `bootstrap-local` must refuse to overwrite an existing config, must copy only
   the safe dev example profile, and must not create secrets, run `doctor`, start
@@ -35,7 +35,7 @@ Expected evidence:
 - relative `bootstrap-local` targets are documented and tested as repository-root
   relative; cross-directory examples should prefer absolute config paths
 - first-run bootstrap smoke evidence must prove a local-only
-  `bootstrap-local -> doctor` simulation in an isolated output directory, with
+  `bootstrap-local -> init -> doctor --read-only` simulation in an isolated output directory, with
   `fresh_machine_simulation = true` and `real_fresh_machine_evidence = false`
 - first-run bootstrap smoke must clear config/database environment overrides,
   rewrite the generated dev config to an isolated SQLite path, write
@@ -379,9 +379,9 @@ Required boundary:
 Recommended verification when the evidence summary changes:
 
 ```bash
-cargo test --test local_alpha_release_evidence -v
+cargo test --features release-tools --test local_alpha_release_evidence -v
 bash -n scripts/local-alpha-evidence-summary.sh
-cargo run --quiet --bin local_alpha_evidence_summary -- --evidence-root .
+cargo run --quiet --features release-tools --bin local_alpha_evidence_summary -- --evidence-root .
 ```
 
 The summary may be attached to release notes or review packets as a gate status
@@ -419,7 +419,7 @@ Recommended verification when the refresh script changes:
 
 ```bash
 bash -n scripts/local-alpha-release-gate-refresh.sh
-cargo test --test local_alpha_release_evidence -v
+cargo test --features release-tools --test local_alpha_release_evidence -v
 ```
 
 ## Local Release Soak Evidence
@@ -475,7 +475,7 @@ Recommended verification when the release soak runner changes:
 
 ```bash
 bash -n scripts/release-soak-local.sh
-cargo test --test local_alpha_release_evidence release_soak -v
+cargo test --features release-tools --test local_alpha_release_evidence release_soak -v
 ```
 
 ## Correlation ID Gate
@@ -535,7 +535,8 @@ The dashboard remains a local-only, read-only inspection surface for Local Alpha
 
 Required boundary:
 
-- bind only to localhost or an explicitly local address
+- enabled dashboard configuration accepts only `localhost` or a loopback IP;
+  non-loopback hosts fail validation before bind
 - expose read-only routes for local observation, including bounded live events
   and durable operation-log history for known MCP tool calls whose
   object-shaped arguments reach project handlers

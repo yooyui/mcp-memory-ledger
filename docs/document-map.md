@@ -1,249 +1,59 @@
-# 文档总览
+# 文档导航
 
-本页整理 MCP Memory Ledger 的主要文档入口，方便按使用目的快速找到对应材料：
+[统一 README](../README.md)是项目首页。本页按读者目标组织阅读路径，避免把阶段日志当成当前教程。
 
-- 首页、快速开始与当前状态
-- 本地接入、验证、发布和产品边界
-- 设计记录、历史资料和后续路线图
+## 我想先用起来
 
-## 1. 一句话说明
+1. [快速开始](quickstart.md)：固定工具链、源码构建、显式 mock 配置、初始化与只读诊断。
+2. [可运行工作流](runnable-memory-workflow.md)：可复制 MCP 参数和离线端到端脚本。
+3. [MCP 客户端接入](local-mcp-integration-2026-03-26.md)：绝对 binary/config/database 路径、stdio 和排错。
+4. [数据库操作](database-operations.md)：init/migrate/doctor、备份/恢复与索引维护。
 
-`agent_llm_mm` 是一个面向 AI 客户端的本地 Rust MCP `stdio` memory demo，支持 SQLite 持久化、配置文件驱动的 provider 加载、`openai-compatible` / OpenRouter 模型接入，以及 trigger-ledger-backed automatic self-revision MVP。
+平台细节：[macOS](development-macos.md) / [Windows](development-windows.md)。语言摘要：[中文兼容入口](README.zh-CN.md) / [English](README.en.md) / [日本語](README.ja.md)。
 
-## 2. 多语言首页
+## 我想知道每个工具的合同
 
-- [English README](../README.md)
-- [中文 README](README.zh-CN.md)
-- [日本語 README](README.ja.md)
+从[32 工具索引](tool-reference.md)开始，再按需读专页：
 
-GitHub 默认首页使用英文；中文和日文通过顶部语言入口切换，避免首页多语言混排。
+| 主题 | 权威合同 |
+| --- | --- |
+| 反馈纠错、FTS/短中文、丰富 Episode/经验版本 | [Feedback & experience](memory-feedback-experience.md) |
+| 完整 JSON byte cap、来源 Episode、诊断的缺失/省略 | [Task context](context-diagnostics.md) |
+| caller-owned 检索/反思/重试预算 | [Operation budget](caller-operation-budget.md) |
+| schema7 全局 self-model 版本、diff、显式补偿 | [版本合同](self-model-versions.md) |
+| schema6 时间、未知历史、旧 receipt/fingerprint | [Temporal metadata](temporal-metadata.md) |
+| Reflection 来源与影响范围、安全 targetless history | [Scope/history](reflection-scope-history.md) |
+| 只读有界交换与依赖完整性 | [Scoped export](scoped-export.md) |
+| 模型配置和兼容边界 | [Provider contract](provider-contract.md) |
 
-补充项目说明：
+字段细节由运行时 `tools/list`、[DTO](../src/interfaces/mcp/dto.rs)和相应 application 类型决定。中文索引负责解释，专页负责完整合同；避免复制几套不同参数表。
 
-- [project-overview.zh-CN.md](project-overview.zh-CN.md)
-- [project-overview.en.md](project-overview.en.md)
-- [project-overview.ja.md](project-overview.ja.md)
+## 我想判断项目是否可发布
 
-## 3. 项目介绍与状态入口
+- [当前实现状态](project-status.md)：已实现 / 部分 / 未实现及精确提交证据。
+- [评估方法](evaluation-methodology.md)：固定 fixture、A/B/C/消融、容量观测和不能推出的结论。
+- [本地 portable 包](portable-packages.md)：来源绑定的原生构建、校验和隔离无 Rust 验证；不等于正式发布。
+- [测试指南](testing-guide-2026-03-24.md)：fast/core/full、离线工作流、CI/平台范围。
+- [最终 70 项核对](plans/2026-10-09-original-plan-final-reconciliation.md)：原方案有限实现收口与外部证据门。
+- [Reality gates](product/follow-up-reality-gates.md)、[Local Alpha gate](product/release-gate-local-alpha.md)、[Release readiness](release-readiness.md)、[release engineering](product/release-engineering.md)。
 
-- [README.md](../README.md)
-  - 仓库首页入口、项目介绍、快速开始、文档导航，以及当前 self-revision MVP 的保守边界
-- [development-macos.md](development-macos.md)
-  - macOS 环境准备、配置、预检、启动和验证
-- [development-windows.md](development-windows.md)
-  - Windows 环境准备、配置、预检、启动和验证
-- [project-status.md](project-status.md)
-  - 当前实现边界、已实现 / 部分实现 / 未实现，重点包含当前 4 条 MCP-wired automatic path、structured diagnostics、dashboard 只读观测面板，以及 `run_reflection` durable write path 的保守范围
-- [self-revision-demo-guide-2026-04-24.md](self-revision-demo-guide-2026-04-24.md)
-  - 零外网依赖的一键 self-revision demo package 运行指南与 artifact 说明
-- [progress-tracker.md](progress-tracker.md)
-  - 把“目标态 / 当前状态 / 当前证据 / 剩余缺口 / 建议下一步”压成一张持续更新的进度追踪对照表
-- [release-readiness.md](release-readiness.md)
-  - 当前 demo 是否适合发布到 GitHub
-- [release-gate.md](release-gate.md)
-  - 发布前最小 gate、self-revision 证据 gate、dashboard gate，以及 sandbox 失败的解释口径
-- [product/prd-local-alpha.md](product/prd-local-alpha.md)
-  - Local Product Alpha PRD，定义目标用户、产品承诺、范围内 / non-goals、用户工作流、Alpha exit gate、验收命令和文档入口；当前口径是 MVP gate 已过并进入产品化路线，但 Local Product Alpha / GA 仍需按后续 gate 完成
-- [product/release-gate-local-alpha.md](product/release-gate-local-alpha.md)
-  - Local Alpha / product alpha release gate，区分 MVP gate 与产品 gate，收口最低命令、product smoke evidence、self-revision demo 8 个 artifact、dashboard local-only、daemon disabled / observe-only 和产品文案边界
-- [product/support-bundle-local-alpha.md](product/support-bundle-local-alpha.md)
-  - Local Alpha 支持包 gate，定义首版本地生成器、可分享内容、排除内容、脱敏术语、验证命令和剩余限制；当前不代表生产支持通道或 Local Alpha 已完成
-- [product/data-lifecycle.md](product/data-lifecycle.md)
-  - Local Alpha 数据生命周期文档，定义 formal / test / demo `database_url` 隔离、SQLite backup / restore-to-new-path、export 边界、保留预期和 schema migration 验证清单
-- [product/follow-up-reality-gates.md](product/follow-up-reality-gates.md)
-  - 产品化二次跟进现实 gate，按 `implemented` / `partial` / `simulation-only` / `planning-gate` 等标签追踪当前 P1/P2/P3 跟进切片哪些已有代码实现、哪些仍是假设或缺 fresh evidence
-- [product/structured-decision-protocol.md](product/structured-decision-protocol.md)
-  - `decide_with_snapshot` v2 response envelope 兼容契约；当前增加 decision id、requested/selected action、policy checks、non-claims 和 bounded confidence metadata，不代表完整决策引擎
-- [product/release-engineering.md](product/release-engineering.md)
-  - 正式产品化发布工程规则，定义 source-only artifact、版本命名、changelog、release evidence directory、compatibility matrix、`release-soak-local.sh` 本地 soak evidence 和 deprecation policy
-- [product/daemon-observe-only-gate.md](product/daemon-observe-only-gate.md)
-  - daemon observe-only gate，定义 Local Alpha 阶段只读诊断边界、forbidden behavior、required diagnostics 和进入写能力前的退出 gate
-- [product/remote-team-mode-boundary.md](product/remote-team-mode-boundary.md)
-  - 远程 / 团队模式边界文档，明确 remote read-only first、remote write/admin gate、namespace/database isolation、transport split 和 Local Alpha non-goals
-- [product/correlation-id-contract.md](product/correlation-id-contract.md)
-  - correlation ID contract，定义 MCP tool call 级 `mcp-tool-call-<uuid-v4>`、dashboard / operation-log 传播和不越过 `run_reflection` 的观测边界
-- [product/memory-layering-roadmap.md](product/memory-layering-roadmap.md)
-  - 多层 memory 产品方向路线图，定义 working / episodic / semantic / procedural memory、slow variables 和 self-model layering 的未来阶段，不代表当前已实现
-- [superpowers/specs/2026-05-28-physics-informed-architecture-design.md](superpowers/specs/2026-05-28-physics-informed-architecture-design.md)
-  - physics-informed architecture 规划与落地边界；把 substrate / signal / memory / policy / control_loop / actuator / interface / release_boundary 分层映射到 `doctor.system_layer_report`，并通过 `evidence_relation_contract` 暴露 evidence semantics v2 的 read-only / no-widening / binary-weight contract；dependency rules 带机器可读 evidence 与 `grants_capability = false`，并明确 physics principle mapping 只是只读架构诊断，不是 physics runtime、solver、controller 或 scientific validation 能力
-- [security/threat-model-local-and-remote.md](security/threat-model-local-and-remote.md)
-  - 本地与远程 surface 的威胁模型，覆盖 SQLite data、provider credentials、reflection audit、operation log、support bundles、trust boundaries 和 remote/team 前置 mitigations
-- [provider-contract.md](provider-contract.md)
-  - 新增 provider 前的就绪清单，覆盖当前 read-only provider matrix、OpenRouter 本地 adapter 切片、planned-only missing implementation checklist、配置校验、`doctor` 脱敏、错误处理、解析契约和现有测试映射；planned-only provider 不能当作可配置能力
-- [roadmap.md](roadmap.md)
-  - 近期 / 中期 / 后期规划，明确哪些是 MVP 延伸，哪些不在近期承诺内
-- [2026-05-09-productization-roadmap.md](superpowers/plans/2026-05-09-productization-roadmap.md)
-  - MVP release gate 之后的正式产品化路线图，按 local alpha、durable observability、controlled beta、remote/team mode 和 GA readiness 分阶段推进
-- [2026-05-09-local-product-alpha-development-tasks.md](superpowers/plans/2026-05-09-local-product-alpha-development-tasks.md)
-  - 正式产品化第一轮 Local Product Alpha 的开发任务列表，包含 PRD、release gate、配置 profile、smoke、数据安全、观测和 daemon gate
-- [2026-05-16-formal-product-readiness-12-workstreams.md](superpowers/plans/2026-05-16-formal-product-readiness-12-workstreams.md)
-  - 把当前 12 项待完善产品化工作拆成可执行 workstream，覆盖 Local Alpha gate、安装配置、runtime coverage、daemon、可观测性、decision protocol、evidence 语义、数据生命周期、provider、安全远程、发布工程和多层 memory 方向
-- [../NOTICE](../NOTICE)
-  - 项目版权、独立项目声明，以及 dashboard 生成图物料的归属说明
+通过代码测试不等于真实用户客户端、fresh-machine、真实模型收益或人工 release approval。[正式化映射](formalization-improvement-plan-2026-08-25.md)列差距，不创建第二份任务队列。
 
-## 4. 建议先读
+## 我想贡献或理解设计
 
-- [README.md](../README.md)
-  - 先看项目一句话说明和多语言入口
-- [CONTRIBUTING.md](../CONTRIBUTING.md)
-  - 公开协作入口、验证要求与文档更新预期
-- [project-status.md](project-status.md)
-  - 当前实现边界、已实现 / 部分实现 / 未实现
-- [progress-tracker.md](progress-tracker.md)
-  - 适合直接用来跟踪后续开发任务推进
-- [release-readiness.md](release-readiness.md)
-  - 当前 demo 是否适合发布到 GitHub
-- [release-gate.md](release-gate.md)
-  - 发布前应执行的命令、artifact 验证，以及 sandbox-only 失败的记录方式
-- [product/prd-local-alpha.md](product/prd-local-alpha.md)
-  - 进入 Local Product Alpha 工作前先读，确认 scope、non-goals、remote write / multi-tenancy / self-governance 边界和 Alpha exit gate
-- [product/release-gate-local-alpha.md](product/release-gate-local-alpha.md)
-  - 判断 Local Alpha 是否可对外表述前阅读；它是产品 alpha gate，不替代 `release-gate.md` 的 MVP gate
-- [product/support-bundle-local-alpha.md](product/support-bundle-local-alpha.md)
-  - 生成或设计本地排障材料前阅读，避免泄露 API keys、raw provider payloads、provider URL secrets、raw TOML 或完整 SQLite 数据库
-- [product/data-lifecycle.md](product/data-lifecycle.md)
-  - 做备份、恢复、迁移、正式/测试/demo 数据隔离或支持包导出边界前阅读
-- [product/follow-up-reality-gates.md](product/follow-up-reality-gates.md)
-  - 做二次跟进、判断规划项是否已经落地或检查假设证据时优先阅读
-- [product/structured-decision-protocol.md](product/structured-decision-protocol.md)
-  - 改 `decide_with_snapshot` 返回结构、MCP schema 或 caller compatibility 前阅读，确认 v2 envelope 和 legacy `blocked` / `decision` 字段保持兼容
-- [product/release-engineering.md](product/release-engineering.md)
-  - 做 release note、source-only tag、compatibility matrix、本地 soak evidence 或 deprecation 规则前阅读；当前本机 runner 是 `./scripts/release-soak-local.sh <candidate-name> [config_path]`
-- [product/daemon-observe-only-gate.md](product/daemon-observe-only-gate.md)
-  - 任何 daemon 代码或文档推进前阅读，确认 observe-only 阶段不调用 `run_reflection`、不写 identity / commitments、不开远程监听
-- [product/remote-team-mode-boundary.md](product/remote-team-mode-boundary.md)
-  - 任何远程 dashboard、admin/API、team mode 或多租户设计前阅读，确认 remote write/admin 仍被 gate 阻断
-- [security/threat-model-local-and-remote.md](security/threat-model-local-and-remote.md)
-  - 任何 remote/team 或安全边界设计前阅读，用于列出 assets、attacker capabilities、trust boundaries 和 mitigations
-- [product/correlation-id-contract.md](product/correlation-id-contract.md)
-  - 任何 MCP handler、dashboard projection、operation-log 或 support bundle 变更前阅读，确认 correlation id 只是 observability metadata
-- [product/memory-layering-roadmap.md](product/memory-layering-roadmap.md)
-  - 任何 richer episode、semantic memory、procedural memory、slow variables 或 self-model 设计前阅读，确认它们仍是后续方向
-- [roadmap.md](roadmap.md)
-  - 近期 / 中期 / 后期规划
-- [2026-05-09-productization-roadmap.md](superpowers/plans/2026-05-09-productization-roadmap.md)
-  - 正式产品化阶段规划
-- [2026-05-09-local-product-alpha-development-tasks.md](superpowers/plans/2026-05-09-local-product-alpha-development-tasks.md)
-  - Local Product Alpha 开发执行清单
-- [2026-05-16-formal-product-readiness-12-workstreams.md](superpowers/plans/2026-05-16-formal-product-readiness-12-workstreams.md)
-  - 当前 12 项待完善工作的执行规划，适合继续拆给 subagent 或作为后续本地提交批次的任务总表
+- [项目起点与原则](origin-and-principles.md) → [路线图](roadmap.md) → [唯一 active plan](plans/2026-07-10-product-replan.md)。
+- [贡献指南](../CONTRIBUTING.md)、[工具链政策](toolchain-policy.md)、[私有模块边界](implementation-module-boundaries.md)。
+- [项目定位](positioning.md)、[FAQ](faq.md)、项目说明 [中文](project-overview.zh-CN.md) / [English](project-overview.en.md) / [日本語](project-overview.ja.md)。
+- 数据与权限：[data lifecycle](product/data-lifecycle.md)、[data safety](product/data-safety-local-alpha.md)、[threat model](security/threat-model-local-and-remote.md)。
+- 辅助能力：[support bundle](product/support-bundle-local-alpha.md)、[correlation ID](product/correlation-id-contract.md)、[daemon observe-only](product/daemon-observe-only-gate.md)、[self-revision demo](self-revision-demo-guide-2026-04-24.md)。
+- 条件性方向：[memory layering](product/memory-layering-roadmap.md)、[remote/team boundary](product/remote-team-mode-boundary.md)、[rmcp compatibility spike](spikes/rmcp-compatibility-2026-07-14.md)。这些不是已实现承诺。
 
-## 5. 发布物料
+## 历史与证据权威
 
-- [github-publish-prep-2026-03-31.md](github-publish-prep-2026-03-31.md)
-  - GitHub description、topics、首页文案和发布阻塞项
-- [2026-03-31-initial-public-release.md](releases/2026-03-31-initial-public-release.md)
-  - 首次公开发布的 release note 草稿
-- [2026-04-20-self-revision-runtime-coverage-and-governance-hardening.md](releases/2026-04-20-self-revision-runtime-coverage-and-governance-hardening.md)
-  - 本地 runtime coverage 与 evidence governance 收口更新记录
-- [self-revision-demo-2026-04-24.md](reports/self-revision-demo-2026-04-24.md)
-  - self-revision demo package 的 canonical report 口径
+- [带日期的实现历史](project-status-history-2026-10-09.md)：保留旧 schema/工具数/测试数/分支状态，不能作为当前状态。
+- [早期 v4 可用性基线](local-memory-usability.md)、[原 70 项 baseline](plans/2026-10-09-original-plan-traceability.md)、[v5 增量](plans/2026-10-09-continuation-results.md)、[schema6 阶段](plans/2026-10-09-schema6-results.md)。
+- [计划索引](plans/README.md)与[历史归档](archive.md)保存出处；历史 checkbox 没有当前执行权。
 
-## 6. 接入与验证文档
+冲突时以实际代码、测试和数据库 readback 为准，并修正文档。README 是入口，状态页是当前事实，路线图是顺序，active plan 是执行队列，reality gates 是完成约束。
 
-- [local-mcp-integration-2026-03-26.md](local-mcp-integration-2026-03-26.md)
-  - 如何把本项目接入本机 AI 客户端，以及当前 runtime hooks、`doctor` 输出和 self-revision MVP 运行边界
-- [testing-guide-2026-03-24.md](testing-guide-2026-03-24.md)
-  - 当前测试基线、推荐验证顺序、self-revision runtime coverage / diagnostics / evidence policy 定向回归和常见问题排查
-- [provider-contract.md](provider-contract.md)
-  - 新增 provider 的就绪清单、read-only provider matrix、OpenRouter 本地 adapter 边界，以及 `tests/provider_config.rs`、`tests/openai_compatible_model.rs`、`tests/mcp_stdio.rs`、`tests/support_bundle.rs` 的覆盖映射
-- [release-gate.md](release-gate.md)
-  - 发布 gate 的最小命令集、self-revision demo artifact 要求，以及 dashboard 边界检查
-- [product/release-engineering.md](product/release-engineering.md)
-  - 正式产品化发布工程规则；第一阶段使用 source-only artifact，本地 soak runner 只生成候选证据，不添加包装自动化声明
-- [product/follow-up-reality-gates.md](product/follow-up-reality-gates.md)
-  - 产品化二次跟进现实 gate；把当前模块按实现、模拟、规划和缺证据状态拆开，防止把 roadmap 误读成完成声明
-- [product/structured-decision-protocol.md](product/structured-decision-protocol.md)
-  - `decide_with_snapshot` structured response envelope；用于追踪 v2 compatibility，不包含 planning、calibrated confidence scoring、provider JSON decision parsing 或 policy arbitration
-- [product/prd-local-alpha.md](product/prd-local-alpha.md)
-  - Local Product Alpha PRD；后续产品化任务应先确认这里的范围、non-goals、exit gate 与验收命令
-- [product/release-gate-local-alpha.md](product/release-gate-local-alpha.md)
-  - Local Alpha release gate；产品化发布前从这里确认 product smoke、self-revision demo、dashboard local-only、daemon observe-only 和 remote write / multi-tenancy 文案边界
-- [product/data-lifecycle.md](product/data-lifecycle.md)
-  - Local Alpha 数据生命周期；正式/测试/demo SQLite 隔离、备份、恢复、导出和 migration 验证入口
-- [product/support-bundle-local-alpha.md](product/support-bundle-local-alpha.md)
-  - Local Alpha support bundle gate；当前已有 `./scripts/generate-support-bundle.sh <output_dir> [config_path]` 首版本地生成器，但仍不是远程上传或生产支持能力
-- [product/remote-team-mode-boundary.md](product/remote-team-mode-boundary.md)
-  - 远程 / 团队模式边界；remote read-only first，remote write/admin、team mode 和 multi-tenancy 仍需后续 gate
-- [security/threat-model-local-and-remote.md](security/threat-model-local-and-remote.md)
-  - 本地与远程 surface 威胁模型；remote/team 工作前的安全审查入口
-- [product/daemon-observe-only-gate.md](product/daemon-observe-only-gate.md)
-  - Local Alpha daemon observe-only gate；防止 daemon work 提前进入写能力或后台自治声明
-- [product/correlation-id-contract.md](product/correlation-id-contract.md)
-  - Local Alpha correlation id contract；用于把 MCP tool call、dashboard event 和 operation-log metadata 串起来
-- [product/memory-layering-roadmap.md](product/memory-layering-roadmap.md)
-  - 多层 memory 产品方向；当前不是 Local Alpha 已实现能力
-- [self-revision-demo-guide-2026-04-24.md](self-revision-demo-guide-2026-04-24.md)
-  - 如何运行 `./scripts/run-self-revision-demo.sh` 并复核 8 个 demo artifact
-- [examples/codex-mcp-config.toml](../examples/codex-mcp-config.toml)
-  - Codex 本机 MCP 配置样例
-- [examples/agent-llm-mm.demo.example.toml](../examples/agent-llm-mm.demo.example.toml)
-  - self-revision demo runner 使用的本地 deterministic provider 配置样例
-- [examples/agent-llm-mm.openrouter.example.toml](../examples/agent-llm-mm.openrouter.example.toml)
-  - OpenRouter 本地配置样例；通过 OpenAI-compatible `/chat/completions` transport 使用；配置示例本身不是 live evidence，显式 `--live` runner 才能生成 bounded live preflight evidence
-
-## 7. 设计记录与历史资料
-
-### 早期讨论记录
-
-- [llm-agent-memory-self-dialogue-2026-03-23.zh-CN.md](llm-agent-memory-self-dialogue-2026-03-23.zh-CN.md)
-  - 原始讨论的整理稿 / 提炼稿
-- [llm-agent-memory-self-dialogue-raw-log-2026-03-23.zh-CN.md](llm-agent-memory-self-dialogue-raw-log-2026-03-23.zh-CN.md)
-  - 逐轮原始日志，保留上下文和表达顺序
-
-### 早期状态记录
-
-- [current-work-2026-03-24.md](current-work-2026-03-24.md)
-  - 较早阶段的实现状态快照
-- [current-work-2026-03-25.md](current-work-2026-03-25.md)
-  - 按 2026-03-27 复核后的实现状态说明
-- [implementation-comparison-2026-03-24.md](implementation-comparison-2026-03-24.md)
-  - 原始设计日志与当前实现的比对
-
-### 阶段规划
-
-- [2026-03-27-plan.md](2026-03-27-plan.md)
-  - 某一轮阶段计划，不等于当前稳定路线图
-- [2026-04-19-self-agent-memory-self-revision-mvp.md](superpowers/plans/2026-04-19-self-agent-memory-self-revision-mvp.md)
-  - 基于 2026-04-19 self-revision 设计初稿拆出的实现计划，默认面向 subagent 执行
-- [2026-04-24-self-revision-demo-package.md](superpowers/plans/2026-04-24-self-revision-demo-package.md)
-  - self-revision demo package 的分步实现计划
-- [2026-03-28-openai-compatible-provider-claude-code.md](superpowers/plans/2026-03-28-openai-compatible-provider-claude-code.md)
-  - 较早的 provider 实现计划草稿，已被后续配置文件方案替代
-- [2026-03-28-openai-compatible-provider-claude-code-design.md](superpowers/specs/2026-03-28-openai-compatible-provider-claude-code-design.md)
-  - 较早的 provider 设计稿，保留用于追溯，不代表当前最终实现
-- [2026-04-19-self-agent-memory-self-revision-mvp-design.md](superpowers/specs/2026-04-19-self-agent-memory-self-revision-mvp-design.md)
-  - 基于原始逐轮日志与再次确认问答整合出的 self-revision MVP 设计初稿
-- [2026-05-09-productization-roadmap.md](superpowers/plans/2026-05-09-productization-roadmap.md)
-  - MVP 之后的正式产品化路线图，当前下一阶段开发应优先参考
-- [2026-05-09-local-product-alpha-development-tasks.md](superpowers/plans/2026-05-09-local-product-alpha-development-tasks.md)
-  - 正式产品化第一轮任务列表，适合拆给 subagent 或按 milestone 执行
-- [2026-05-16-formal-product-readiness-12-workstreams.md](superpowers/plans/2026-05-16-formal-product-readiness-12-workstreams.md)
-  - 12 项后续完善工作的正式产品化执行规划，连接 Local Alpha gate、Beta、remote/team 和 GA readiness 前置工作
-- [2026-05-24-p1-p2-p3-product-completion-plan.md](superpowers/plans/2026-05-24-p1-p2-p3-product-completion-plan.md)
-  - 本轮 P1/P2/P3 后续实现计划；把 product readiness、release decision、status sync、decision/evidence/episode/provider、remote/team/security、memory projection 和 wording guard 拆成可验证切片
-- [2026-05-24-p1-p2-p3-user-request-record.md](plans/2026-05-24-p1-p2-p3-user-request-record.md)
-  - 本轮用户原始请求和执行边界的本地保存记录，用于后续追溯“按顺序做 P1/P2/P3”和 MVP / technical demo 口径约束
-- [product/data-lifecycle.md](product/data-lifecycle.md)
-  - Workstream 8 的数据生命周期落地文档
-- [product/follow-up-reality-gates.md](product/follow-up-reality-gates.md)
-  - 产品化二次跟进现实 gate，用于追踪 12 项规划中哪些已有实现、哪些只是模拟证据、哪些仍是 planning gate
-- [product/release-engineering.md](product/release-engineering.md)
-  - Workstream 11 的 release engineering 落地文档，包含本地 release soak runner 入口与边界
-- [product/remote-team-mode-boundary.md](product/remote-team-mode-boundary.md)
-  - Workstream 10 的远程 / 团队模式边界文档
-- [product/memory-layering-roadmap.md](product/memory-layering-roadmap.md)
-  - Workstream 12 的多层 memory 产品方向文档
-- [2026-05-28-physics-informed-architecture-design.md](superpowers/specs/2026-05-28-physics-informed-architecture-design.md)
-  - physics-informed architecture 规划文档；本轮已以只读 `doctor.system_layer_report`、带 runtime / declared-test-contract evidence 的 dependency rules、product wording guard 和 reality gate 形式落地可本地核验部分，仍把 Local Alpha、Windows parity、fresh-machine、remote/team、daemon writes、security/auth、memory layering 和 release packaging 的外部/后续证据保留为 blocker
-
-## 8. 阅读建议
-
-- 如果你是第一次看这个仓库：先读 README，再读 `project-status.md`、`release-readiness.md` 与 `release-gate.md`
-- 如果你想确认 automatic self-revision 到底实现到哪里：直接读 `project-status.md`，再读 `roadmap.md`
-- 如果你想快速看见 automatic self-revision 的证据链：读 `self-revision-demo-guide-2026-04-24.md`，再运行 `./scripts/run-self-revision-demo.sh`
-- 如果你想确认 runtime hooks、diagnostics 和 durable write path：读 `project-status.md`，再读 `local-mcp-integration-2026-03-26.md`
-- 如果你要接入新 provider：先读 `provider-contract.md`，再按 `testing-guide-2026-03-24.md` 的 provider 验证顺序执行
-- 如果你想接入或开发：先进入对应平台文档，再读 `local-mcp-integration-2026-03-26.md`、`testing-guide-2026-03-24.md` 与 `release-gate.md`
-- 如果你要把项目推进成正式产品：先读 `superpowers/plans/2026-05-09-productization-roadmap.md`，再读 `product/prd-local-alpha.md` 确认 Local Product Alpha 的 scope、non-goals 和 exit gate，然后读 `product/release-gate-local-alpha.md` 确认产品 alpha gate；执行前先用 `product/follow-up-reality-gates.md` 区分已实现、模拟证据和 planning gate，第一轮按 `superpowers/plans/2026-05-09-local-product-alpha-development-tasks.md` 执行，后续 12 项完善工作按 `superpowers/plans/2026-05-16-formal-product-readiness-12-workstreams.md` 拆分推进
-- 如果你想追溯设计来源：最后读原始讨论资料和历史快照
+当前 schema7 有界版本交付与源代码绑定验证：[阶段结果](plans/2026-10-10-schema7-results.md)。历史 schema6 数值保持原样，不能自动认证当前源码。

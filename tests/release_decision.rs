@@ -228,7 +228,10 @@ fn release_decision_script_is_local_source_only_and_writes_candidate_artifacts()
     assert!(script.contains("release-decision.json"));
     assert!(script.contains("release-decision.md"));
     assert!(script.contains("\"rejected\" and \"deferred\" record explicit"));
-    assert!(script.contains("cargo run --quiet --bin release_decision_local --"));
+    assert!(
+        script
+            .contains("cargo run --quiet --features release-tools --bin release_decision_local --")
+    );
     assert!(
         !script.contains(" ssh "),
         "release decision script must not call ssh"

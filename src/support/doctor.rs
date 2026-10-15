@@ -1,6 +1,10 @@
 use serde::Serialize;
 
 use crate::{
+    adapters::sqlite::{
+        DatabaseLifecycleReport, SqliteStore, initialize_database, inspect_database,
+        migrate_database, open_read_only_current_database,
+    },
     domain::{
         evidence_relation::{
             EVIDENCE_RELATION_AVAILABLE_NOT_SELECTED_STATUS, EVIDENCE_RELATION_NO_WIDENING_POLICY,
@@ -23,6 +27,8 @@ use super::remote_team::{
 pub struct DoctorReport {
     pub transport: TransportKind,
     pub database_url: String,
+    pub database_lifecycle: DatabaseLifecycleReport,
+    pub retrieval_index: Option<crate::adapters::sqlite::RetrievalIndexReport>,
     pub provider: ModelProviderKind,
     pub base_url: Option<String>,
     pub model: Option<String>,
@@ -184,6 +190,17 @@ pub struct SystemPhaseCoverage {
 }
 
 pub async fn run_doctor(config: AppConfig) -> anyhow::Result<DoctorReport> {
+    run_doctor_with_bootstrap(config, false).await
+}
+
+pub async fn run_doctor_allow_bootstrap(config: AppConfig) -> anyhow::Result<DoctorReport> {
+    run_doctor_with_bootstrap(config, true).await
+}
+
+async fn run_doctor_with_bootstrap(
+    config: AppConfig,
+    allow_bootstrap: bool,
+) -> anyhow::Result<DoctorReport> {
     config.validate().map_err(anyhow::Error::msg)?;
 
     let base_url = config
@@ -191,10 +208,28 @@ pub async fn run_doctor(config: AppConfig) -> anyhow::Result<DoctorReport> {
         .map(|base_url| provider_base_url_shape(&base_url));
     let model = config.doctor_model();
 
-    let runtime = match config.transport {
-        TransportKind::Stdio => interfaces::mcp::validate_stdio_runtime(&config).await?,
+    let mut database_lifecycle = inspect_database(&config.database_url).await?;
+    if allow_bootstrap {
+        database_lifecycle = match database_lifecycle.status.as_str() {
+            "missing" => initialize_database(&config.database_url).await?,
+            "current" => database_lifecycle,
+            _ => migrate_database(&config.database_url).await?,
+        };
+        database_lifecycle.operation = "doctor_allow_bootstrap".to_string();
+        if !database_lifecycle.bootstrap_performed {
+            database_lifecycle.message =
+                "database already current; bootstrap permission was not used".to_string();
+        }
+    }
+    let operation_log = match config.transport {
+        TransportKind::Stdio => open_read_only_current_database(&config.database_url).await?,
     };
-    let daemon_observe_only = build_daemon_observe_only_diagnostics(&config, &runtime).await;
+    let retrieval_index = match operation_log.as_ref() {
+        Some(store) => Some(store.inspect_retrieval_index().await?),
+        None => None,
+    };
+    let daemon_observe_only =
+        build_daemon_observe_only_diagnostics(&config, operation_log.as_ref()).await;
     let provider_matrix = build_provider_matrix(&config);
     let remote_team_capability_inventory = remote_team_capability_inventory();
     let remote_team_security_gates = remote_team_security_gate_report();
@@ -204,6 +239,17 @@ pub async fn run_doctor(config: AppConfig) -> anyhow::Result<DoctorReport> {
     Ok(DoctorReport {
         transport: config.transport,
         database_url: config.database_url,
+        status: if database_lifecycle.is_current()
+            && retrieval_index
+                .as_ref()
+                .is_none_or(|index| index.is_usable())
+        {
+            "ok"
+        } else {
+            "attention_required"
+        },
+        database_lifecycle,
+        retrieval_index,
         provider: config.model_provider,
         base_url,
         model,
@@ -225,7 +271,6 @@ pub async fn run_doctor(config: AppConfig) -> anyhow::Result<DoctorReport> {
             .map(|hook| hook.to_string())
             .collect(),
         self_revision_write_path: interfaces::mcp::server::SELF_REVISION_WRITE_PATH,
-        status: "ok",
     })
 }
 
@@ -309,19 +354,24 @@ fn build_system_layer_report(
                 "derived claims, snapshots, episode projections, and read-only memory-layer labels",
                 ["build_self_snapshot", "memory_layer_projection"],
                 [
-                    "memory layering is partial; procedural memory and durable new layer writes are not implemented",
+                    "memory layering is partial; legacy snapshot projection does not include the separate v5 inert experience-candidate runtime",
                     "future memory layers need migration, lifecycle, and evidence-link gates",
                 ],
                 [
                     system_layer_diagnostic(
                         "layered_projection_classification",
                         "partial",
-                        "working / episodic / semantic / self_model report partial when read-only evidence exists; procedural stays not_implemented",
+                        "legacy snapshot-only working / episodic / semantic / self_model labels report partial with evidence; its procedural label does not describe the separate v5 experience candidate API",
+                    ),
+                    system_layer_diagnostic(
+                        "experience_candidate_runtime",
+                        "implemented",
+                        "schema-v5 explicit Episode and semantic/procedural candidate tools support scoped evidence, versioned reject/revise/rollback and active-only recall; activation grants no execution or permission",
                     ),
                     system_layer_diagnostic(
                         "self_model_durable_writes",
                         "blocked",
-                        "self_model layer stays read-only; run_reflection is the only durable identity / commitment write path",
+                        "automatic memory-layer self-model writes remain blocked; schema-v7 governed global append-only versions and explicit compensation are implemented through run_reflection as the only durable identity / commitment write path",
                     ),
                 ],
             ),
@@ -390,7 +440,7 @@ fn build_system_layer_report(
             "remote/team behavior is blocked and not implemented".to_string(),
             daemon_writes_blocker,
             remote_writes_blocker,
-            "memory layering remains partial; procedural memory and durable new layer writes are not implemented".to_string(),
+            "memory layering remains partial; v5 experience candidates are inert and separate from legacy snapshot projections".to_string(),
         ],
         non_claims: vec![
             "not a physics solver".to_string(),
@@ -774,14 +824,22 @@ fn system_phase_coverage() -> Vec<SystemPhaseCoverage> {
             4,
             "Memory Layering, Still Local And Gated",
             "partial",
-            "read-only episode and layered memory projections",
-            ["episode_summary_projection", "memory_layer_projection"],
+            "read-only episode and layered memory projections plus schema-v7 governed global append-only versions and explicit compensation through run_reflection only",
             [
-                "procedural memory is not implemented",
-                "durable self-model writes require migration, lifecycle, and rollback gates",
+                "episode_summary_projection",
+                "memory_layer_projection",
+                "self_model_versions",
+                "get_self_model_versions",
+                "run_reflection",
+            ],
+            [
+                "procedural execution is not implemented; v5 procedural candidates remain inert data",
+                "automatic memory-layer writes and autonomous self-revision remain blocked",
+                "broader durable memory layers still require separate migration, lifecycle, evidence-link, rollback, and write-path gates",
             ],
             [
                 "cargo test --test product_completion_read_models -v",
+                "cargo test --test self_model_versions --test schema7_migration -v",
                 "cargo test --test sqlite_backup_restore -v",
             ],
         ),
@@ -806,7 +864,7 @@ fn system_phase_coverage() -> Vec<SystemPhaseCoverage> {
             6,
             "Provider Expansion",
             "partial",
-            "mock, openai-compatible, and openrouter are locally supported; future provider rows remain rejected",
+            "mock, openai-compatible, openrouter, native OpenAI Responses, and native Anthropic Messages are locally supported; native adapters have offline coverage only; future provider rows remain rejected",
             ["provider_matrix"],
             [
                 "Azure OpenAI and local providers remain planned-only",
@@ -842,15 +900,24 @@ fn system_phase_coverage() -> Vec<SystemPhaseCoverage> {
             8,
             "Release Engineering And Beta/GA Readiness",
             "partial",
-            "local source-only soak and candidate evidence diagnostics",
-            ["release_soak_local", "product_readiness_check"],
+            "local exact-source portable archive build and unpack verification simulation, plus local soak and candidate evidence diagnostics",
+            [
+                "scripts/portable-package.py build",
+                "scripts/portable-package.py verify",
+                "release_soak_local",
+                "product_readiness_check",
+            ],
             [
                 "installer is not implemented",
-                "binary package and service manager are not implemented",
-                "compatibility matrix automation is not implemented",
+                "service manager and auto-updater are not implemented",
+                "production package readiness is not established",
+                "real fresh-machine and real-user client evidence remain external gates",
+                "human release decision and Local Alpha approval remain external gates",
+                "full user-client compatibility matrix evidence is incomplete; native CI covers only configured hosts",
                 "Beta/GA claims are blocked",
             ],
             [
+                "python -m unittest discover -s tests -p test_portable_package.py",
                 "bash -n scripts/release-soak-local.sh",
                 "cargo test --test local_alpha_release_evidence release_soak -v",
             ],
@@ -932,20 +999,32 @@ fn provider_base_url_shape(base_url: &str) -> String {
 
 async fn build_daemon_observe_only_diagnostics(
     config: &AppConfig,
-    operation_log: &impl OperationLogStore,
+    operation_log: Option<&SqliteStore>,
 ) -> DaemonObserveOnlyDiagnostics {
     let mut read_errors = Vec::new();
     let (trigger_candidates_observed, trigger_candidates_suppressed) = if config.daemon.enabled {
-        (
-            count_trigger_candidates(operation_log, OperationLogStatus::Failed, &mut read_errors)
+        if let Some(operation_log) = operation_log {
+            (
+                count_trigger_candidates(
+                    operation_log,
+                    OperationLogStatus::Failed,
+                    &mut read_errors,
+                )
                 .await,
-            count_trigger_candidates(
-                operation_log,
-                OperationLogStatus::Suppressed,
-                &mut read_errors,
+                count_trigger_candidates(
+                    operation_log,
+                    OperationLogStatus::Suppressed,
+                    &mut read_errors,
+                )
+                .await,
             )
-            .await,
-        )
+        } else {
+            read_errors.push(
+                "operation_log:unavailable:database is not current; read-only doctor did not bootstrap"
+                    .to_string(),
+            );
+            (0, 0)
+        }
     } else {
         (0, 0)
     };

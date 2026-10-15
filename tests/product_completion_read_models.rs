@@ -1,3 +1,7 @@
+#[cfg(feature = "release-tools")]
+use agent_llm_mm::support::product_wording::{
+    ClaimGateState, ProductClaimGuardInput, check_product_claims,
+};
 use agent_llm_mm::{
     domain::{
         episode_projection::{
@@ -5,15 +9,16 @@ use agent_llm_mm::{
         },
         evidence_relation::{EvidenceRelationInput, build_evidence_relation_report},
         memory_layer_projection::{MemoryLayerProjectionInput, build_memory_layer_projection},
+        memory_semantics_projection::{
+            MemorySemanticsProjectionInput, build_memory_semantics_projection,
+        },
         snapshot::SelfSnapshot,
     },
+    error::AppError,
     run_doctor,
-    support::{
-        product_wording::{ClaimGateState, ProductClaimGuardInput, check_product_claims},
-        remote_team::{
-            RemoteTeamCapabilityState, remote_team_capability_inventory,
-            remote_team_security_gate_report,
-        },
+    support::remote_team::{
+        RemoteTeamCapabilityState, remote_team_capability_inventory,
+        remote_team_security_gate_report,
     },
 };
 use tempfile::tempdir;
@@ -127,18 +132,19 @@ fn evidence_relation_report_marks_empty_selection_as_available_not_selected_with
 }
 
 #[test]
-fn evidence_relation_report_dedupes_inputs_and_keeps_counts_statuses_and_json_consistent() {
+fn evidence_relation_report_normalizes_mixed_references_and_keeps_counts_statuses_and_json_consistent()
+ {
     let report = build_evidence_relation_report(EvidenceRelationInput {
         trigger_window_event_ids: vec![
-            "evt-new".to_string(),
+            "event:evt-new".to_string(),
             "evt-mid".to_string(),
             "evt-new".to_string(),
-            "evt-old".to_string(),
+            "event:evt-old".to_string(),
         ],
         selected_evidence_event_ids: vec![
+            "event:evt-mid".to_string(),
             "evt-mid".to_string(),
-            "evt-mid".to_string(),
-            "evt-old".to_string(),
+            "event:evt-old".to_string(),
         ],
         selection_basis: Some("explicit_model_ids".to_string()),
     })
@@ -148,6 +154,15 @@ fn evidence_relation_report_dedupes_inputs_and_keeps_counts_statuses_and_json_co
     assert_eq!(report.selected_count, 2);
     assert_eq!(report.rejected_count, 1);
     assert_eq!(report.relations.len(), 3);
+    assert_eq!(
+        report
+            .relations
+            .iter()
+            .map(|relation| relation.event_id.as_str())
+            .collect::<Vec<_>>(),
+        ["evt-new", "evt-mid", "evt-old"],
+        "projection readback keeps ordered raw ids for its *_event_ids compatibility contract"
+    );
     assert_eq!(
         report.selected_count + report.rejected_count,
         report.trigger_window_size
@@ -199,13 +214,17 @@ fn evidence_relation_report_dedupes_inputs_and_keeps_counts_statuses_and_json_co
         !serialized.to_string().contains("provider_payload"),
         "relation reports must not carry raw provider payloads"
     );
+    assert!(
+        !serialized.to_string().contains("event:evt-"),
+        "event-id readback remains raw rather than changing the existing JSON shape"
+    );
 }
 
 #[test]
 fn evidence_relation_report_rejects_selected_evidence_outside_trigger_window() {
     let error = build_evidence_relation_report(EvidenceRelationInput {
         trigger_window_event_ids: vec!["evt-2".to_string(), "evt-1".to_string()],
-        selected_evidence_event_ids: vec!["evt-outside".to_string()],
+        selected_evidence_event_ids: vec!["event:evt-outside".to_string()],
         selection_basis: Some("model_proposed_ids".to_string()),
     })
     .expect_err("selected evidence outside the current trigger window must be rejected");
@@ -215,18 +234,39 @@ fn evidence_relation_report_rejects_selected_evidence_outside_trigger_window() {
 }
 
 #[test]
+fn evidence_relation_report_rejects_invalid_event_reference_forms() {
+    for invalid_event_id in ["", " ", "event:", "event:event:evt-window"] {
+        let error = build_evidence_relation_report(EvidenceRelationInput {
+            trigger_window_event_ids: vec![invalid_event_id.to_string()],
+            selected_evidence_event_ids: Vec::new(),
+            selection_basis: None,
+        })
+        .expect_err("invalid trigger-window references must fail closed");
+        assert!(matches!(
+            error,
+            AppError::InvalidParams(message) if message == "InvalidEventReference"
+        ));
+    }
+}
+
+#[test]
 fn episode_summary_projection_is_read_only_local_metadata_over_episode_events() {
     let projection = build_episode_summary_projection(EpisodeProjectionInput {
         episode_reference: "episode:task-42".to_string(),
         episode_event_ids: vec![
-            "evt-objective".to_string(),
+            "event:evt-objective".to_string(),
             "evt-action".to_string(),
+            "event:evt-action".to_string(),
             "evt-outcome".to_string(),
         ],
         objective: Some("stabilize local evidence gate".to_string()),
         outcome: Some("blocked remote claims until auth gates exist".to_string()),
         lesson: None,
-        linked_evidence_ids: vec!["evt-action".to_string(), "evt-outcome".to_string()],
+        linked_evidence_ids: vec![
+            "event:evt-action".to_string(),
+            "evt-action".to_string(),
+            "event:evt-outcome".to_string(),
+        ],
     })
     .expect("episode event projection should build");
 
@@ -250,6 +290,30 @@ fn episode_summary_projection_is_read_only_local_metadata_over_episode_events() 
         projection.identity_or_commitment_updates,
         Vec::<String>::new()
     );
+    let serialized = serde_json::to_value(&projection).expect("projection JSON");
+    assert_eq!(
+        serialized["linked_evidence_ids"],
+        serde_json::json!(["evt-action", "evt-outcome"])
+    );
+}
+
+#[test]
+fn episode_summary_projection_rejects_invalid_event_reference_forms() {
+    for invalid_event_id in ["", " ", "event:", "event:event:evt-action"] {
+        let error = build_episode_summary_projection(EpisodeProjectionInput {
+            episode_reference: "episode:invalid-reference".to_string(),
+            episode_event_ids: vec!["evt-objective".to_string()],
+            objective: None,
+            outcome: None,
+            lesson: None,
+            linked_evidence_ids: vec![invalid_event_id.to_string()],
+        })
+        .expect_err("invalid linked-evidence references must fail closed");
+        assert!(matches!(
+            error,
+            AppError::InvalidParams(message) if message == "InvalidEventReference"
+        ));
+    }
 }
 
 #[test]
@@ -407,7 +471,7 @@ async fn doctor_memory_layer_exposes_read_only_classification_diagnostics() {
         .find(|layer| layer.name == "memory")
         .expect("memory layer should be present");
 
-    // memory 层保持只读且 partial，不得开放任何写入。
+    // This read-only memory-layer report grants no automatic write authority.
     assert!(!memory_layer.writes_allowed);
     assert_eq!(memory_layer.status, "partial");
 
@@ -418,6 +482,17 @@ async fn doctor_memory_layer_exposes_read_only_classification_diagnostics() {
         .collect();
     assert!(diagnostic_keys.contains(&"layered_projection_classification"));
     assert!(diagnostic_keys.contains(&"self_model_durable_writes"));
+    let experience = memory_layer
+        .diagnostics
+        .iter()
+        .find(|item| item.key == "experience_candidate_runtime")
+        .unwrap();
+    assert_eq!(experience.status, "implemented");
+    assert!(
+        experience
+            .detail
+            .contains("activation grants no execution or permission")
+    );
 
     let self_model_diagnostic = memory_layer
         .diagnostics
@@ -425,7 +500,16 @@ async fn doctor_memory_layer_exposes_read_only_classification_diagnostics() {
         .find(|diagnostic| diagnostic.key == "self_model_durable_writes")
         .expect("self_model durable write diagnostic should be present");
     assert_eq!(self_model_diagnostic.status, "blocked");
-    assert!(self_model_diagnostic.detail.contains("run_reflection"));
+    for expected_scope in [
+        "automatic memory-layer self-model writes remain blocked",
+        "schema-v7 governed global append-only versions and explicit compensation are implemented",
+        "run_reflection as the only durable identity / commitment write path",
+    ] {
+        assert!(
+            self_model_diagnostic.detail.contains(expected_scope),
+            "missing self-model write diagnostic scope: {expected_scope}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -694,6 +778,82 @@ async fn doctor_exposes_read_only_system_layer_report_with_architecture_blockers
         .map(|phase| phase.phase)
         .collect();
     assert_eq!(phase_numbers, [0, 1, 2, 3, 4, 5, 6, 7, 8]);
+    let memory_phase = system_layer_report
+        .phase_coverage
+        .iter()
+        .find(|phase| phase.phase == 4)
+        .expect("memory layering phase");
+    assert_eq!(memory_phase.status, "partial");
+    assert!(memory_phase.implementation_mode.contains(
+        "schema-v7 governed global append-only versions and explicit compensation through run_reflection only"
+    ));
+    for expected_anchor in [
+        "self_model_versions",
+        "get_self_model_versions",
+        "run_reflection",
+    ] {
+        assert!(
+            memory_phase
+                .current_anchor
+                .iter()
+                .any(|anchor| anchor == expected_anchor),
+            "missing implemented self-model anchor: {expected_anchor}"
+        );
+    }
+    let memory_blockers = memory_phase.blocked_items.join("\n");
+    for expected_boundary in [
+        "procedural execution is not implemented",
+        "automatic memory-layer writes and autonomous self-revision remain blocked",
+        "broader durable memory layers still require separate",
+    ] {
+        assert!(
+            memory_blockers.contains(expected_boundary),
+            "missing memory-layer boundary: {expected_boundary}"
+        );
+    }
+    assert!(!memory_blockers.contains("durable self-model writes require"));
+
+    let release_phase = system_layer_report
+        .phase_coverage
+        .iter()
+        .find(|phase| phase.phase == 8)
+        .expect("release engineering phase");
+    assert_eq!(release_phase.status, "partial");
+    assert!(
+        release_phase.implementation_mode.contains(
+            "local exact-source portable archive build and unpack verification simulation"
+        )
+    );
+    for expected_anchor in [
+        "scripts/portable-package.py build",
+        "scripts/portable-package.py verify",
+        "product_readiness_check",
+    ] {
+        assert!(
+            release_phase
+                .current_anchor
+                .iter()
+                .any(|anchor| anchor == expected_anchor),
+            "missing local packaging anchor: {expected_anchor}"
+        );
+    }
+    let release_blockers = release_phase.blocked_items.join("\n");
+    for expected_boundary in [
+        "installer is not implemented",
+        "service manager and auto-updater are not implemented",
+        "production package readiness is not established",
+        "real fresh-machine and real-user client evidence remain external gates",
+        "human release decision and Local Alpha approval remain external gates",
+        "full user-client compatibility matrix evidence is incomplete; native CI covers only configured hosts",
+        "Beta/GA claims are blocked",
+    ] {
+        assert!(
+            release_blockers.contains(expected_boundary),
+            "missing release phase boundary: {expected_boundary}"
+        );
+    }
+    assert!(!release_blockers.contains("binary package and service manager are not implemented"));
+
     let phase_coverage =
         serde_json::to_string(&system_layer_report.phase_coverage).expect("phase coverage json");
     for expected_boundary in [
@@ -756,7 +916,7 @@ async fn doctor_exposes_read_only_system_layer_report_with_architecture_blockers
 }
 
 #[test]
-fn memory_layer_projection_is_read_only_and_keeps_self_model_durable_writes_blocked() {
+fn memory_layer_projection_is_read_only_and_keeps_automatic_self_model_writes_blocked() {
     let projection = build_memory_layer_projection(MemoryLayerProjectionInput {
         snapshot: SelfSnapshot {
             identity: vec!["identity:self=technical-demo".to_string()],
@@ -768,9 +928,14 @@ fn memory_layer_projection_is_read_only_and_keeps_self_model_durable_writes_bloc
         episode_projection_count: 1,
     });
 
+    assert_eq!(
+        projection.capability_scope,
+        "legacy_snapshot_projection_only_not_v5_experience_inventory"
+    );
     assert!(projection.read_only);
     assert!(!projection.writes_performed);
     assert_eq!(projection.durable_self_model_write_path, "run_reflection");
+    assert!(projection.layers.iter().all(|layer| !layer.writes_allowed));
     assert_eq!(
         projection.layer_status("working").as_deref(),
         Some("partial")
@@ -793,6 +958,32 @@ fn memory_layer_projection_is_read_only_and_keeps_self_model_durable_writes_bloc
     );
 }
 
+#[test]
+fn memory_semantics_projection_reports_richer_semantics_without_new_durable_writes() {
+    let projection = build_memory_semantics_projection(MemorySemanticsProjectionInput {
+        evidence_relation_count: 3,
+        episode_summary_count: 2,
+        semantic_claim_count: 4,
+        procedural_memory_count: 0,
+        self_model_write_migration_present: false,
+    });
+
+    assert!(projection.read_only);
+    assert!(!projection.writes_performed);
+    assert_eq!(projection.durable_self_model_write_path, "run_reflection");
+    assert_semantic_capability(&projection, "evidence_relations", "partial");
+    assert_semantic_capability(&projection, "episode_summaries", "partial");
+    assert_semantic_capability(&projection, "procedural_memory", "not_implemented");
+    assert_semantic_capability(&projection, "durable_self_model_writes", "blocked");
+    assert!(
+        projection
+            .non_claims
+            .iter()
+            .any(|claim| claim.contains("not full ranking engine"))
+    );
+}
+
+#[cfg(feature = "release-tools")]
 #[test]
 fn product_wording_guard_blocks_overstated_claims_without_matching_gates() {
     let report = check_product_claims(ProductClaimGuardInput {
@@ -826,4 +1017,23 @@ fn product_wording_guard_blocks_overstated_claims_without_matching_gates() {
             .iter()
             .any(|violation| violation.claim == "complete_self_governance")
     );
+}
+
+fn assert_semantic_capability(
+    projection: &agent_llm_mm::domain::memory_semantics_projection::MemorySemanticsProjection,
+    capability: &str,
+    status: &str,
+) {
+    let entry = projection
+        .capabilities
+        .iter()
+        .find(|entry| entry.capability == capability)
+        .unwrap_or_else(|| {
+            panic!(
+                "missing semantic capability {capability}; capabilities={:?}",
+                projection.capabilities
+            )
+        });
+    assert_eq!(entry.status, status);
+    assert!(!entry.writes_allowed);
 }

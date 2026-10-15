@@ -92,11 +92,11 @@ During observe-only Local Alpha work, the daemon must not:
 - claim continuous autonomy, self-governance, or all-entry automatic
   self-revision
 
-The future daemon trigger policy in
-[`../superpowers/specs/2026-04-27-local-daemon-trigger-policy.md`](../superpowers/specs/2026-04-27-local-daemon-trigger-policy.md)
-describes a later stage where daemon-triggered writes, if allowed, still go
-through governed `run_reflection`. That later policy does not authorize
-`run_reflection` calls in the observe-only gate.
+The historical future-daemon policy is preserved in
+`codex/archive/pre-mainline-reset-2026-07-10` at
+`docs/superpowers/specs/2026-04-27-local-daemon-trigger-policy.md`. It does not
+authorize `run_reflection` calls in the current observe-only gate. Any future
+daemon write proposal must re-enter the active plan as a new governed slice.
 
 ## Required Diagnostics
 

@@ -233,6 +233,14 @@ fn provider_config_shape(config: &AppConfig) -> ProviderConfigShape {
                 credential_configured: !provider.api_key.trim().is_empty(),
             }
         }
+        ModelConfig::OpenAiResponses(provider) | ModelConfig::Anthropic(provider) => {
+            ProviderConfigShape {
+                base_url: Some(base_url_shape(&provider.base_url)),
+                model: Some("<redacted-model>".to_string()),
+                timeout_ms: Some(provider.timeout_ms),
+                credential_configured: !provider.api_key.trim().is_empty(),
+            }
+        }
     }
 }
 

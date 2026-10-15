@@ -1,334 +1,98 @@
 # 当前实现状态
 
-## 项目定位
+## 2026-10-15 体验与客户端验收
 
-当前仓库更准确的定位是：
+体验复测工具及实时网页已纳入仓库；实际 Codex app-server 在独立 HOME/mock 库完成 3 进程、2 次重连、17 次 MCP 工具调用、0 模型轮次。历史真实 90 轮的人工复核有 4 个问题轮次；修复后的付费复测、桌面持续注册和 fresh-machine 未验证。详见[本轮验收记录](acceptance-2026-10-15.md)。下方带日期段落保留历史证据。
 
-“一个面向本机 AI 客户端的 trigger-ledger-backed self-agent memory MVP / technical demo”
+## 2026-10-13 验收工具更新
 
-它已经完成了工程闭环、本机接入闭环，以及受治理的 automatic self-revision MVP；但还没有完成原始设计里更完整的“自我机制”产品语义，也不能对外包装成完整自治系统。
+三协议验收器已覆盖 Chat、Responses、Anthropic；新增请求/输入/输出限制与失败用量记录。回环 fixture 与真实调用分层，未知价格不声明美元硬上限；真实模型与用户客户端仍待验收。候选包增加更正重放、跨 namespace 直接查询/历史隔离及恢复后的历史/证据比对。当前步骤和证据口径见[本轮验收记录](acceptance-2026-10-13.md)。
+
+
+更新：2026-10-10。当前定位：**local-first technical MVP，尚未正式发布 binary package**。历史运行时实现基线为 `9ba0050d3ffb9228b02e2d0895b4e76d11ead989`；本轮新增源代码绑定的本地 portable package 构建/解包验证，Windows wrapper 行为测试和修复，以及 schema7 全局 self-model 追加版本。包可在本地生成，不代表人工发布批准。
 
 ## 已实现
 
-### 1. 最小运行链路
+| 能力 | 当前合同与证据入口 |
+| --- | --- |
+| 32 个 MCP stdio 工具 | [按用途索引](tool-reference.md)，以运行时 `tools/list` 的 schema 为准 |
+| Scoped Event / Claim / Episode / Reflection 浏览、lookup、修订与证据关系 | 显式 namespace、scope-first 查询、不跨范围扩大；[工作流](runnable-memory-workflow.md) |
+| 原子 Claim 纠错与持久 request_id 回执 | [更正工作流](runnable-memory-workflow.md)、[反馈候选合同](memory-feedback-experience.md) |
+| 持久反馈候选 | 提案、确定性验证、拒绝、事务内再验证与原子提交；来源标签不认证真实性 |
+| 派生 FTS5 与短 CJK fallback | 可检查/重建；基于原文再次验证 scope 和字面匹配；不提供语义 embeddings |
+| 有界任务上下文 | 完整 Claim/Event 优先、来源关联 Episode、可选诊断；[完整 JSON 字节合同](context-diagnostics.md) |
+| Caller-owned 操作预算 | 仅 recall/context/reflection 三条路径；可观察 stop/error receipt；[非持久配额](caller-operation-budget.md) |
+| 丰富 Episode 与版本化经验候选 | source-linked、inspect/reject/revise/rollback/activate；候选只供召回，不自动执行 |
+| Schema 7 | [记录/观察时间与纳秒排序](temporal-metadata.md)、[独立 Reflection origin/affected scope](reflection-scope-history.md)、规范化来源关系 |
+| 全局 self-model 追加版本 | 初始化/迁移真实 baseline、CAS、同范围来源 diff 与显式补偿回滚；[实验性单用户合同](self-model-versions.md) |
+| 只读 scoped export | 有界、一致、同范围、无写日志；[交换而非备份](scoped-export.md) |
+| 安全本地生命周期 | 显式 init/migrate、只读 doctor、结构读回、排他 writer admission、迁移前备份/恢复演练；[操作手册](database-operations.md) |
+| 原生模型协议 | `openai-responses` / `anthropic` 非流式文本 decision 与 reflection proposal；保留 Chat Completions/OpenRouter；[离线合同与限制](provider-contract.md) |
+| 内部模块整理 | [SQLite、MCP、自动反思私有模块边界](implementation-module-boundaries.md)，未新增框架或权限 |
 
-当前最小链路已经打通：
+新 Claim 有记录时间；历史未知时间保持 null。Reflection 的 origin 与 affected scope 各有职责，后者不是另一项可见性授权。旧 receipt/fingerprint 字节兼容性有迁移回归，不能通过迁移伪造历史或改变已成功请求的含义。
 
-`events -> claims -> self_snapshot -> decision -> reflection`
+## 本轮交付：原生模型协议
 
-对应到 MCP 工具层，当前可用的 4 个工具是：
+新增显式 `openai-responses` / `[model.openai_responses]` 与 `anthropic` / `[model.anthropic]` 配置，分别使用 Responses 和 Messages 原生请求/响应；原有 Chat Completions/OpenRouter 配置不迁移。共享纯 prompt/领域解析与有界 HTTP 副作用层，拒绝重定向、无自动重试，错误与密钥 Debug 脱敏；只接受完整纯文本结果。未新增工具、streaming、vision、provider 托管状态或第二条 reflection 写路径。
 
-- `ingest_interaction`
-- `build_self_snapshot`
-- `decide_with_snapshot`
-- `run_reflection`
+本轮验证范围为配置、协议 fixture、错误/拒绝/截断和实际 MCP stdio 离线路径；具体命令见[测试指南](testing-guide-2026-03-24.md)。本轮未调用付费 API，没有新增 live-certified 声明。下方 schema7 与历史提交测试数字保持当时含义，不作为新增协议代码的通过数量；最终运行结果及精确提交 CI 需单独记录。
 
-### 2. SQLite 持久化
+本轮本地验证完成：696 项 all-feature Rust 测试通过（0 failed/ignored/filtered），严格 all-target/all-feature Clippy、fmt、33 项状态同步、13 项 Python fixture、40 项包合同测试通过；实际二进制重启/纠错/备份恢复、temporal/scope/export 与固定离线 evaluator 均通过。独立审查发现的 nullable Chat tool_calls、底层隐式重试与 TOML 密钥片段问题已修正并回归。固定 evaluator 仍为 8/10，保留两个不支持的 paraphrase case；不视为真实模型效果。构建缓存空间不足后仅清理可再生 debug cache，使用 debug info 关闭、incremental 关闭的本地验证 profile 重新完整执行；没有跳过测试。精确提交的三平台 CI 结果记录在草稿 PR，不用本地 Linux 结果代替 Windows/macOS。
 
-- 已使用文件型 SQLite
-- 支持跨重启保持数据
-- `AppConfig::load()` 的默认启动路径可通过 `AGENT_LLM_MM_DATABASE_URL` 显式覆盖数据库位置
-- `AppConfig::load_from_path()` 会保留显式文件里的 `database_url`
-- 若显式文件省略 `database_url`，`load_from_path()` 仍会通过 `AppConfig::default()` 继承环境变量派生出来的默认数据库路径
+## 本轮交付：schema7 全局 self-model 版本
 
-### 3. `namespace` 最小闭环
+本地实现增加 append-only 全局序列、只读同范围 written-component history/diff、可选 expected-version guard 和需显式确认的补偿回滚。旧库迁移只捕获当前投影，不伪造过去的有效时间；漂移 fail closed。新全局写、Claim 效果、来源、版本和 receipt 同事务。新代码的本地测试/独立审查与精确提交 CI 必须分别记录，旧 schema6 数值不替代验证。
 
-当前已支持：
+本轮源代码本地验证：673 项 all-feature Rust 测试全部通过（0 failed/ignored/filtered），严格 all-target/all-feature Clippy、fmt、独立只读审查、三组实际二进制离线闭环、9 项 Python fixture 与 33 项包合同测试通过。二进制/源码身份和范围见[schema7 阶段结果](plans/2026-10-10-schema7-results.md)。精确提交 CI 与发布仍单独验证，不继承历史 head 绿灯。
 
-- `self`
-- `world`
-- `user/<id>`
-- `project/<id>`
+## 本轮交付：可追溯包与 Windows wrapper
 
-并且这些语义已贯穿：
+- [Portable package](portable-packages.md)：从精确 Git commit/tree 构建本机原生二进制，包含校验信息、许可、隔离 mock 配置与使用说明；验证先检查归档和来源，再在无 Rust 的子进程环境完成真实二进制闭环。
+- PowerShell wrapper：补齐 literal 路径、仓库根目录相对路径、调用者配置环境恢复及多余参数拒绝；真实平台行为由 `scripts/test-windows-wrapper.py` 在 Windows CI 执行。
+- 这些检查是受控本地/CI 安装模拟；M1 真实用户客户端、真实 fresh-machine 十分钟验收、live provider 和人工 release decision 未因此完成。
+- Windows 回归按真实原生进程检查参数透传；Python 数据库验证显式关闭连接，避免临时目录清理持有文件锁。Windows 的各 Python 检查分成独立 CI 步骤，后续成功命令不能掩盖前一项失败。
+- 任何精确提交是否通过，以该提交 PR checks 为准；下方保留原实现基线，不将旧绿灯作为本轮结果。
 
-- domain 校验
-- SQLite 约束
-- MCP DTO 输入
-- event / claim / trigger ledger 持久化；legacy event rows 会按 owner 规则回填 namespace
+## 2026-10-10 包与 Windows 精确提交证据
 
-### 4. 反思最小正向路径
+包/wrapper 阶段 `0ca8bccc64cadb3f1eae9d1a74bad602a1c60bc9` 的 [CI run 38035347484](https://github.com/yooyui/mcp-memory-ledger/actions/runs/38035347484) 三平台全部成功：Linux x86_64 与 macOS ARM64 各 634 项 all-feature Rust 测试，Windows x86_64 为 247 项 native Rust 测试；三平台均通过 13 项 Python fixture、40 项包回归和精确源码构建/无 Rust 解包闭环。Windows PowerShell 7.6.6 实际通过 12 项 wrapper 测试，其中原生参数/环境测试覆盖 20 种组合。
 
-`run_reflection` 已支持：
+首轮 Windows 检查发现并修复了 doctor 参数绑定、SQLite 连接关闭和测试 PATH 基线问题；各 Python CI 步骤独立传播失败。以上是指定 host 与该提交的证据，不是所有 Windows/macOS 版本、真实 fresh-machine、用户客户端或正式发布认证。Schema7 后续 head 须重新执行自己的 CI。
 
-- 审计友好的 supersede / dispute 行为
-- 显式 `replacement_evidence_event_ids`
-- 一套窄化的结构化 `replacement_evidence_query` 首批能力，支持 namespace / owner / kind / limit 过滤，空查询结果仍返回 `invalid_params`
-- 一条最小可用的 `identity_core` / `commitments` 深层修订路径，并把 supporting evidence 与请求的更新内容写入 reflection 审计记录
-- 缺失 evidence event id 时返回 `invalid_params`
+## 验证证据（明确绑定提交）
 
-### 5. 本机接入入口
+实现基线 [9ba0050](https://github.com/CeauYoo/mcp-memory-ledger/commit/9ba0050d3ffb9228b02e2d0895b4e76d11ead989) 的 [CI run 37930021202](https://github.com/yooyui/mcp-memory-ledger/actions/runs/37930021202) 三平台成功：
 
-- `scripts/agent-llm-mm.sh bootstrap-local`
-- `scripts/agent-llm-mm.sh doctor`
-- `scripts/agent-llm-mm.sh serve`
-- 可作为本机 MCP 子进程被 Codex 类客户端接入
+- Ubuntu / macOS：各 633 项 all-feature Rust 测试。
+- Windows：247 项 native Rust 测试，不代表全部 shell wrapper parity。
+- 三平台：各 9 项 Python fixture 测试、installed-copy 重启/备份恢复、反馈/经验 evaluator、时间/范围/export 可执行工作流。
+- 同源本地：551 项默认 / 633 项 all-feature Rust 测试，无失败或忽略；fmt、严格 Clippy、32 项 status-sync 及 diff 检查通过。
 
-`bootstrap-local` 是 Local Alpha first-run 配置引导器：默认把 `examples/agent-llm-mm.dev.example.toml` 复制到 `agent-llm-mm.local.toml`，或复制到显式传入的目标路径。显式目标为相对路径时按仓库根目录解析；跨目录调用建议传绝对路径。它拒绝覆盖已有配置，父目录不存在时拒绝继续，不生成 secret，不运行 `doctor`，不启动 `serve` 或 daemon，也不代表安装包、远程 bootstrapper、GA 或 production-ready 能力。
+这些是实现基线的证据；后续提交必须单独核验 CI，不能继承旧 head 的绿灯。[测试指南](testing-guide-2026-03-24.md)提供复现入口，[最终 70 项核对](plans/2026-10-09-original-plan-final-reconciliation.md)记录源码身份和逐项边界。
 
-`first-run-bootstrap-smoke-local.sh` 是 Local Alpha first-run 本地模拟证据脚本：它在不存在或为空的隔离输出目录里运行 `bootstrap-local`，把生成配置的 `database_url` 改成同目录 SQLite，再运行 `doctor` 并写出 `doctor.json` / `summary.json`。它会清理 `AGENT_LLM_MM_CONFIG` / `AGENT_LLM_MM_DATABASE_URL` 干扰，不写真实 HOME，不启动 `serve`，不调用 product smoke 或 demo wrapper，也不代表真实 fresh-machine install、Windows runner parity、installer、远程 bootstrapper、GA 或 production-ready 能力。
-
-### 6. SQLite backup / restore 本地门禁
+固定离线代理指标 8/10，两个语义改写 miss 原样保留；50 个额外 query variants 单独计数，不能算作 60 项独立任务。测量同时记录延迟退化、额外上下文字节和存储成本；shared-host 合成数据不是生产容量保证。真实模型任务成功率、token 和费用收益尚未测量。详见[评估方法](evaluation-methodology.md)。原始运行输出保留本地；已发布历史证据不改写身份或数值。
 
-- `scripts/backup-sqlite.sh` 与 `scripts/restore-sqlite.sh` 已纳入 `tests/sqlite_backup_restore.rs` 脚本级回归测试
-- 当前门禁覆盖：backup -> restore-to-new-path roundtrip、restore 拒绝覆盖已有目标、backup 拒绝 live database 目录树内备份、in-memory SQLite 拒绝、invalid percent encoding 拒绝和 `..` restore target 拒绝
-- restore 仍默认写入新 SQLite 路径；正式 `database_url` 是否切换必须在 restored DB 跑过 `doctor` 后由人工决定
-- 这只是 Local Alpha 本地 data lifecycle gate，不是远程备份、云同步、定时 daemon、生产灾备、admin/auth 或团队模式能力
+## 部分实现 / 仍有限制
 
-### 7. provider adapters
+- 显式 scoped snapshot 已实现；省略 namespace 的旧接口兼容路径仍未统一隔离。namespace 不是 authn/authz。
+- legacy 全局 self-model 治理仍是 experimental。`decide_with_snapshot` 只执行服务端 commitment gate，结果标记 `experimental_non_authoritative`，不是完整 policy verdict。
+- identity/commitment 已有有界追加版本、记录边界 effective-time、同范围来源 diff 与显式补偿回滚；迁移前有效时间保持 unknown，不提供回溯调度或跨范围全局快照。
+- 诊断是有界且不完整的可观察样本；缺失诊断不证明没有冲突，记录年龄不代表过期。
+- 索引损坏可触发字面读取 fallback，但不保证受损 trigger 下写入仍健康；检查与重建是全库工具。
+- 所有历史与成功回执 retain-all；没有自动 retention、tombstone 或 compaction。
 
-- 已实现 `openai-compatible` 模型适配器
-- 已实现 OpenRouter adapter 本地切片：通过 OpenAI-compatible `/chat/completions` transport 接入，覆盖 config parser、doctor、support bundle、MCP `stdio` decision path 和 self-revision path 的本地 stub 回归
-- 已支持通过本地 TOML 配置文件选择 provider
-- runtime 已能按配置在 `mock`、`openai-compatible` 与 `openrouter` 间切换
-- `doctor` 会输出 provider / base_url shape / model，但不会泄露 API key、URL userinfo、path content 或 query secret
-- `doctor.provider_matrix` 已输出当前只读 provider matrix：`mock`、`openai-compatible`、`openrouter` 为 `supported` / configurable；`azure-openai`、`local` 为 `planned-only` / not configurable，并列出缺失的 config parser、doctor diagnostics、model adapter、error handling、redaction 和 MCP stdio tests
-- planned-only provider 仍会被配置解析拒绝，不能被当成已实现 adapter
-- OpenRouter 当前不代表真实 OpenRouter live provider 已认证，也不是 provider gateway
-
-### 8. automatic self-revision MVP
-
-- 已新增 `self_revision` 领域契约，包含 trigger type、proposal rationale 和 machine patch 最小结构
-- `ModelPort` 已支持 `propose_self_revision`
-- `mock` 与 `openai-compatible` adapter 已实现最小 proposal 行为
-- proposal 首阶段已支持 `proposed_evidence_event_ids`、`proposed_evidence_query` 与 `confidence`；这些字段当前用于收口证据候选与置信度，其中 `proposed_evidence_query` 在 explicit ids 为空时可作为 bounded narrowing hint，对当前 trigger window 做交集收口，并在有交集时按当前窗口内的候选顺序应用 `limit`；project / user scoped conflict 与 periodic trigger window 会先排除 sibling namespace 事件；`recorded_after` / `recorded_before` recency window 已按 inclusive 边界参与过滤；若没有交集，不再绕过 query 改用 full trigger window。explicit ids 非空时，这些 ids 也必须满足 query 在当前 trigger window 内的过滤约束，但不代表 richer widening / ranking engine 已落地
-- 已新增 trigger ledger 持久化，能记录 handled / rejected / suppressed 结果、episode watermark 和 cooldown，并通过 structured diagnostics 暴露 `trigger_type`、`namespace`、`trigger_key`、outcome、rejection / suppression reason、`cooldown_state`、cooldown boundary、evidence window size 与 selected evidence ids
-- 已新增 `auto_reflect_if_needed` 协调器，负责 trigger 判定、proposal 请求、治理校验和写入前收口
-- 当前 MCP-wired automatic path 已谨慎扩到 4 条：`ingest_interaction -> failure`、`ingest_interaction -> conflict`、`decide_with_snapshot -> conflict`、`build_self_snapshot -> periodic`
-- `ingest_interaction` / `decide_with_snapshot` / `build_self_snapshot` 上的 best-effort auto-reflection 失败都不会把已经成功的 MCP 主路径改写成额外的 MCP 错误
-- 通过治理的 automatic self-revision 最终仍复用 `run_reflection` 作为 identity / commitments 的 durable write path
-- 直接 `run_reflection` MCP tool 不会递归触发 auto-reflection
-
-当前 runtime hook contract matrix 如下（本表为这 4 条 runtime hook contract 的权威单一来源，README 与 testing-guide 引用本表而不另行复制，避免漂移）：
-
-| Hook | Trigger Input | Runs When | Does Not Do |
-| --- | --- | --- | --- |
-| `ingest_interaction:failure` | repeated or explicit failure signal | after successful ingest path | does not turn successful ingest into MCP error if best-effort reflection fails |
-| `ingest_interaction:conflict` | explicit `trigger_hints` containing `conflict` or `identity` | after successful ingest path | does not infer conflict from arbitrary text alone |
-| `decide_with_snapshot:conflict` | explicit `auto_reflect_namespace` and conflict-compatible `trigger_hints` | after non-blocked decision | does not run when commitment gate blocks the decision |
-| `build_self_snapshot:periodic` | explicit `auto_reflect_namespace` | during snapshot build with periodic policy | does not create a background scheduler |
-
-Implementation notes:
+## 尚未关闭的产品与研究门
 
-- `ingest_interaction:failure` currently means `failure` or `rollback` trigger hints plus the failure evidence threshold.
-- `ingest_interaction:conflict` accepts only conflict-compatible hints (`conflict` or `identity`); arbitrary conflict-looking text with no hints or unrelated hints such as `commitment` does not start this hook.
-- `build_self_snapshot:periodic` is part of the snapshot tool flow, but the best-effort reflection attempt runs before `build_self_snapshot::execute`; it is not a scheduler.
-
-这代表“自动 self-revision MVP”已经存在，但它仍然是受限、保守、局部接线的 demo 能力。
-
-### 9. self-revision demo package
-
-- 已新增 deterministic `openai-compatible` stub provider binary
-- 已新增 demo runner binary，复用真实 MCP `stdio` 服务和现有 4 个 MCP tool 跑 canonical scenario
-- 已新增 macOS shell wrapper：`./scripts/run-self-revision-demo.sh`
-- 运行后会生成 `doctor.json`、snapshot before / after、decision before / after、timeline、SQLite summary 和 Markdown report
-- 该 demo 只证明当前 MVP 的可重复证据链，不新增 MCP tool、daemon、Web UI 或新的 durable write path
-
-### 10. Local read-only dashboard service
+1. 用户真实 MCP 客户端闭环及 fresh-machine 安装证据。
+2. 正式发行包与人工 release approval、实际用户机器支持范围及 rollback note；本地构建器和 CI wrapper 验证属于实现基础。
+3. 经单独授权和预算约束的真实同模型效果 / token / 成本实验。
+4. 更广泛 self-model 生命周期政策、语义检索，以及需独立需求和权限的 remote/team/autonomy。
 
-- 已支持通过 `[dashboard]` 配置随 `serve` 启动只读 HTTP 面板
-- 面板展示运行时 operation 事件，并保持 MCP `stdio` 输出不被污染
-- HTTP surface 只注册 GET route；写方法会返回 `405 Method Not Allowed`，dashboard route 不调用 `run_reflection`
-- 当前 UI 为 `Memory-chan Live Desk`，使用内嵌生成图物料与 CSS 装饰复刻清新活力二次元观测面板
-- 生成图物料位于 `src/interfaces/dashboard/static/`，版权/归属说明已记录在 `NOTICE`
-- 当前 dashboard event recorder 仍是 bounded in-memory recorder，不是 durable operation-log database
-- MCP tool 调用已生成 `mcp-tool-call-<uuid-v4>` correlation id；dashboard 成功/失败事件、auto-reflection 诊断事件和 detail projection 会保留该 id
-- 已知 MCP tool 调用在 object-shaped arguments 进入项目 handler 后，成功与 handler-reached 失败都会追加 tool-level `operation_log` 元数据，包含 entrypoint、status、namespace、correlation id 和受限摘要；framework-level 解析/路由失败不在该 handler-level 记录范围内；失败路径记录不改变 MCP error code / error message 语义
-- dashboard 已提供本机只读 `GET /api/operation-log` 与 `GET /api/operation-log/{id}` durable history JSON API，可按 `limit`、`namespace`、`kind`、`correlation_id` 做受限查询；history 列表默认最多返回 100 条，单次查询最大 100 条
-- correlation id 与 operation-log 元数据仅用于观测排障，不替代 `run_reflection`，也不写 identity / commitments / reflection audit
+当前没有正式 Alpha/Beta/GA 或 production-ready 声明。启用 dashboard 仍只允许 loopback，daemon 仍 observe-only。
 
-### 11. Local support bundle generator
+## 文档权威与历史
 
-- 已新增首版本机支持包生成入口：`./scripts/generate-support-bundle.sh <output_dir> [config_path] [--log-file <path>] [--correlation-id <id>]`
-- 生成器输出 `manifest.json`、`doctor.json`、`config-shape.json`、`operation-summaries.json`、`release-metadata.json`、`product-smoke-summary.json` 和 `local-log-excerpts.json`
-- `doctor` / config 只保留脱敏 shape：SQLite URL 会泛化为 `sqlite://<local-path>`，provider credential 只输出布尔值，provider URL 会移除 userinfo、path content 与 query；support bundle 的 `doctor.json` 不执行 runtime bootstrap
-- operation summaries 通过 read-only SQLite 连接读取最多 25 条 durable operation-log metadata，不输出 request / response / diagnostic payload summary；user/project namespace 只输出 shape，secret-like operation id / correlation id 会替换为 `<redacted-metadata>`；可显式传入生成型 `--correlation-id mcp-tool-call-<uuid-v4>` 只导出匹配 correlation id 的 metadata，并在 `operation-summaries.json.filter` 记录过滤条件；数据库或 `operation_log` 表不存在时会标记 unavailable，不创建或迁移数据库
-- 非生成型、非 canonical 或非 v4 的 correlation id filter 会在创建 bundle 输出目录前被拒绝，避免把 secret-like 文本写进诊断包 metadata
-- local log excerpts 只在显式 `--log-file <path>` 时生成 bounded / redacted 摘要，secret-like config/log 文件名会折叠成 `<local-path>/<redacted-name>`；不自动扫描日志目录、home、系统日志、browser profile、SSH/cookie/session、shell history 或 `target/` 输出，也不复制原始 `.log` 文件
-- 默认不复制完整 SQLite 数据库、不包含 raw TOML、不包含 provider payload、不上传数据，也不新增 identity / commitments / reflection 的 durable write path
-- `manifest.json` 会输出 `safety_checks`，明确记录 read-only、未 runtime bootstrap、未包含 SQLite/TOML/raw log/provider payload
-- local support bundle 仍只是 Local Alpha 诊断辅助；它不代表生产支持通道、远程上传能力、observe-only daemon diagnostics 或 Local Alpha 完整 gate 已完成
-
-### 12. Local Alpha evidence summary
-
-- 已新增本地只读证据汇总入口：`./scripts/local-alpha-evidence-summary.sh`
-- Rust 入口为 `src/bin/local_alpha_evidence_summary.rs`，核心汇总逻辑在 `src/support/local_alpha_evidence.rs`
-- 汇总器读取已有 Local Alpha evidence：product smoke `latest` 目录、first-run bootstrap `summary.json`、Windows parity `summary.json` 和 support bundle 目录；`first_run_simulation` gate 只表示本地首启模拟证据，真实 fresh-machine 仍由 `first_run_bootstrap` gate 单独阻断
-- 真实 fresh-machine summary 现在需要明确 real evidence kind、`fresh_machine_simulation = false`、`captured_at`、`source_checkout`，以及带显式 `exit_code = 0` 的成功 `bootstrap-local` / `doctor` command evidence；Windows parity summary 现在需要 `windows_runtime_parity` kind、`captured_at`，以及带显式 `exit_code = 0` 的成功 bootstrap / doctor / product-smoke command evidence。缺少这些外部证据 metadata 时，对应 gate 会保持 `open` / `not_verified`
-- 输出 JSON 包含 `overall_status`、`local_only`、`summary_boundary` 和 gate 列表；每个 gate 至少包含 `name`、`status`、`evidence_path` 或 `reason`
-- 可选输出 Markdown，并保守声明所有 gate 都 `satisfied` 时也只是 `ready_for_human_review`，仍需要人工 release decision
-- 当 real fresh-machine evidence 或 Windows parity evidence 缺失时，overall / gate status 会保持 `in_progress` / `open` / `not_verified`，不会宣称 Local Alpha 完成
-- 该能力不启动 `serve`，不运行 product smoke，不上传文件，不触发 daemon 写，也不新增 durable write path；`run_reflection` 仍是唯一 durable identity / commitment / reflection 写路径
-
-### 13. Observe-only daemon diagnostics
-
-- `doctor` 已输出 `daemon_observe_only` 本机只读诊断字段
-- 该字段固定声明 `mode = "observe_only"`、`local_only = true`、`write_gate_approved = false`、`writes_allowed = false`、`remote_listener_enabled = false`
-- 当 `[daemon].enabled = true` 时，诊断会读取本地 `operation_log` 中 `operation_kind = tool / trigger` 且 `status = failed / suppressed` 的有界候选计数，当前每个 kind/status 读取最多 25 条
-- 诊断还暴露 `data_sources`、`cooldown_status`、`in_flight_task_count` 和 `read_errors`，用于本机 preflight 排查
-- `DaemonHandle` 现在有本地生命周期回归：disabled handle 会快速退出，observe-only handle 可 start / stop，drop 会 abort 未停止的本地 lifecycle task；`serve` 仅在 `[daemon].enabled = true` 时启动 observe-only handle，并在 stdio service 退出后停止它；`writes_allowed = false`、`remote_listener_enabled = false`
-- 这不是 daemon 写能力：observe-only lifecycle tick 不调用 `run_reflection`，不写 identity / commitments / claims / events / reflections，也不启动 remote listener 或代表后台自治 / Local Alpha 已完成；`doctor` 只做 preflight 诊断，不启动 daemon loop
+[路线图](roadmap.md)回答先后顺序，[唯一 active plan](plans/2026-07-10-product-replan.md)管理执行，[reality gates](product/follow-up-reality-gates.md)约束完成声明。
 
-### 14. Productization follow-up reality gates
-
-- 已新增追踪文档：`docs/product/follow-up-reality-gates.md`
-- 该文档把后续产品化模块按 `implemented`、`partial`、`simulation-only`、`planning-gate`、`blocked claim`、`not-implemented` 等状态拆开
-- 它明确标出 Local Alpha release gate、fresh-machine first-run、Windows parity、daemon lifecycle、remote/team/auth/security、release engineering 和 multi-layer memory 等模块中仍带假设或缺 fresh evidence 的部分
-- 它不是新的产品能力声明，而是二次跟进追踪入口；后续每个模块只有在代码、测试、文档和 fresh evidence 对齐后才能从 open 状态移动
-
-### 15. P1/P2/P3 follow-up gate slices
-
-- Product readiness checker 已提供候选级本地只读门禁汇总，会把真实 fresh-machine、Windows parity、release decision、remote/team、安全/auth、daemon writes 和产品措辞缺口保持为 blocked
-- Release decision artifact 生成器已能写 source-only decision 模板，并在 evidence summary 仍为 `in_progress` 时拒绝 approved 决策
-- `status-sync-check` 已从测试总数漂移扩展到 plan/reality gate 矛盾检测；勾选完成的计划项如果对应 reality gate 仍是 `implemented-unmerged` / `partial` / `simulation-only` / `planning-gate` / `blocked claim` / `not-implemented` 会失败
-- Support bundle manifest 已增加非 manifest 文件的 SHA-256 integrity 列表；daemon observe-only diagnostics 已输出 write/remote blockers
-- `decide_with_snapshot` response envelope 已升级为 `protocol_version = 2`，新增 `decision_id`、requested/selected action、bounded local confidence metadata、policy checks 和 non-claims，同时保留旧 `blocked` / `decision` 字段
-- Evidence relation read model 已能只读展示 trigger window 内 selected evidence、available-not-selected rows、rejected count、relation status、window rank、rejection reason、bounded binary selection weight 和 no-widening policy；`doctor.system_layer_report.evidence_relation_contract` 同步公开 v2 contract、read-only/no-widening/binary-weight policy、allowed status、selected/unselected weight、rejection reason 和 additive v2 字段；它不拉取 trigger window 外证据，也不是完整 ranking / scoring engine
-- Episode summary projection 已能以只读 local metadata 表达 objective、outcome、linked evidence ids，不写 identity 或 commitments
-- Provider matrix planned-only 行已输出 missing implementation checklist，避免把 future provider 当作可配置 adapter
-- `doctor` 已输出 `remote_team_capability_inventory` 与 `remote_team_security_gates`，所有 remote/team 能力和 security/auth 前置门禁仍默认 blocked，support bundle upload 为 false
-- `doctor.system_layer_report` 已输出只读 architecture layer summary，八层固定为 substrate / signal / memory / policy / control_loop / actuator / interface / release_boundary；报告本身 `writes_performed = false`，actuator 仍只锚定 `run_reflection` 且不新增写授权；`evidence_relation_contract` 将 evidence semantics v2 的 no-widening / bounded binary selection metadata 暴露为 doctor-level 机器可读契约；dependency rules 现在带 `status`、`grants_capability = false` 和逐项 evidence，其中 daemon / remote-write 等当前状态使用 `runtime` evidence，release-boundary / memory-write 等边界使用 `declared_test_contract` evidence 并标为 `declared-test-contract`，只公开验证命令而不声称 doctor 已运行测试；physics principle mappings、Phase 0-8 coverage 和 non-claims 均为报告/门禁信息，不是 runtime、solver、controller 或 scientific validation 能力
-- Multi-layer memory projection 已提供只读分层状态：working / episodic / semantic / self-model 为 partial，procedural 为 not implemented；不新增 durable self-model 写路径
-- Product wording guard 已接入 product readiness，阻断 Beta、GA、production-ready、remote/team、remote write admin、complete self-governance、physics-informed runtime、solver/controller 和 scientific validation 等缺少 gate 的候选措辞
-
-## 部分实现
-
-### 1. `decide_with_snapshot`
-
-- commitment gate 是真实能力
-- 下游模型调用已可走 `openai-compatible` 或 OpenRouter
-- 当前返回 envelope 已有 `protocol_version = 2`、`decision_id`、requested/selected action、bounded local confidence metadata、policy checks、non-claims 和 commitment-gate metadata
-- 原有 `blocked` / `decision` 字段保留，`decision` 内仍是最小 `action` 字符串
-
-因此它更适合作为最小决策闭环和集成验证能力，而不是完整决策引擎。
-
-### 2. provider 生态
-
-- 当前 provider 边界已经抽出来
-- 仓库内目前实现了 `mock`、`openai-compatible` 与 `openrouter`
-- 当前 provider matrix 只是只读合同和 doctor 诊断；它不会让 `azure-openai`、`local` 变成可运行 provider
-- OpenRouter 支持范围仍限于 OpenAI-compatible chat completions transport 的本地验证，不是 live-provider 认证
-
-### 3. `self_snapshot`
-
-- 当前有统一 `SnapshotBudget`
-- 主要控制 evidence 数量
-
-它还不是对 `identity / commitments / claims / episodes` 分层预算的完整模型。
-
-### 4. `episodes`
-
-- 当前主要是 `episode_reference -> event_id` 级别的轻量聚合
-
-它还不是带 `goal / outcome / lesson / self_effect` 的完整自传式建模。
-
-### 5. `identity_core` / `commitments` 深层修订
-
-- 当前已经能通过 `run_reflection` 最小更新 `identity_core`
-- 当前已经能通过 `run_reflection` 最小更新 `commitments`
-- 反思审计会记录 supporting evidence 与请求的更新载荷
-- 当前 deeper-update 输入、evidence、baseline commitment 和审计边界已收口到 `docs/superpowers/specs/2026-04-27-reflection-deeper-update-contract.md`
-
-但它仍然只是首版收口，不是 richer schema、版本化 slow-variable 层或完整策略系统。
-
-### 6. 默认数据库作用域
-
-- 已可稳定落盘
-- 默认语义已收口为“本机用户共享的持久化默认库”
-- 若需要按项目、按环境或按实验隔离，应显式配置不同的 `database_url`
-
-### 7. self-revision 触发面与运行形态
-
-- 当前领域层 trigger type 已覆盖 `failure / conflict / periodic`
-- 当前协调器和 ledger 也已接通这 3 类 trigger 的最小 runtime coverage
-- 当前 MCP-wired automatic path 只有这 4 条，而且需要按各自边界显式触发：
-  - `ingest_interaction -> failure`
-  - `ingest_interaction -> conflict`
-  - `decide_with_snapshot -> conflict`
-  - `build_self_snapshot -> periodic`
-- `ingest_interaction -> conflict` 仍要求显式 `trigger_hints` 包含 `conflict` 或 `identity`
-- `decide_with_snapshot` 与 `build_self_snapshot` 仍要求调用方显式传 `auto_reflect_namespace`
-- `decide_with_snapshot` 的 conflict auto-reflection 还要求显式 conflict-compatible `trigger_hints`，并且只会在非 blocked 决策后 best-effort 运行，不会改变原有 decision payload 形状
-- 当前没有新增单独的 auto-reflection MCP tool，也没有后台 daemon、定时调度器或“所有入口统一自动反思”的运行形态
-
-因此，当前仓库可以准确描述成“已实现 trigger-ledger-backed automatic self-revision MVP”，但不能描述成“完整自治 self-governing agent”。
-
-## 未实现
-
-- richer 自动 evidence lookup（当前 `replacement_evidence_query` / `proposed_evidence_query` 仍只是 namespace / owner / kind / inclusive recency window / limit 的窄化 evidence-oriented 查询基础；只读 relation projection 已有首片，但不是 full ranking/weighting engine）
-- richer evidence weighting / full ranking engine
-- `identity_core` 的 richer schema 与版本化形成机制
-- `commitments` 的 richer schema、升级 / 失效策略与更细粒度生命周期
-- 更多 provider 类型（Azure、本地模型网关；provider 质量、SLA 和 gateway 认证仍由 provider certification preflight 保持 blocked）
-- richer `claim / episode / identity` schema
-- durable working memory / procedural memory 的独立建模
-- 持续后台自治运行、独立 daemon 与更完整的多层 memory 自治系统
-
-## 当前验证状态
-
-截至 `2026-06-08`，本分支需要 fresh 运行：
-
-- `cargo fmt --check`
-- `git diff --check`
-- `cargo clippy --all-targets --all-features -- -D warnings`
-- `cargo test`
-- `cargo test --test non_mvp_product_tracks -v`
-- `AGENT_LLM_MM_DATABASE_URL=sqlite:///private/tmp/agent-llm-mm-doctor.sqlite ./scripts/agent-llm-mm.sh doctor` 或 `AGENT_LLM_MM_DATABASE_URL=sqlite:///private/tmp/agent-llm-mm-doctor-cargo.sqlite cargo run --quiet --bin agent_llm_mm -- doctor`
-- `cargo test --test demo_openai_compatible_stub --test self_revision_demo_runner --test openai_compatible_model --test mcp_stdio -v`
-- `./scripts/run-self-revision-demo.sh target/reports/self-revision-demo/latest`
-- `./scripts/product-smoke-local.sh`
-- `./scripts/generate-support-bundle.sh target/support-bundles/local-alpha-gate`
-
-结果：
-
-- `lib unit tests`: 9
-- `application_use_cases`: 25
-- `bootstrap`: 24
-- `daemon_config`: 12
-- `dashboard_config`: 4
-- `dashboard_http`: 7
-- `dashboard_projection`: 2
-- `dashboard_recorder`: 2
-- `decision_flow`: 2
-- `demo_openai_compatible_stub`: 1
-- `domain_invariants`: 4
-- `domain_snapshot`: 6
-- `evidence_query_dto`: 4
-- `failure_modes`: 36
-- `first_run_bootstrap_smoke`: 4
-- `local_alpha_external_evidence`: 7
-- `local_alpha_release_evidence`: 20
-- `mcp_stdio`: 46
-- `non_mvp_product_tracks`: 8
-- `openai_compatible_model`: 11
-- `operation_log`: 9
-- `packaging_archive`: 7
-- `product_completion_read_models`: 15
-- `product_readiness`: 15
-- `provider_config`: 18
-- `provider_live_certification`: 12
-- `release_decision`: 5
-- `self_revision_demo_runner`: 2
-- `sqlite_backup_restore`: 6
-- `sqlite_store`: 23
-- `status_sync`: 11
-- `support_bundle`: 35
-- 合计：400 个测试通过
-- `doctor` 返回 JSON，且 `status = ok`
-- self-revision demo package 生成 release gate 要求的 8 个核心 artifact，并证明 before / after decision shift
-- Local Alpha product smoke 通过 staging / promote 流程刷新 `target/reports/self-revision-demo/latest`
-- Local Alpha support bundle 生成允许的 JSON 文件，敏感词扫描无未脱敏命中，且未包含 `.sqlite`、`.toml` 或原始 `.log` 文件
-- Local release soak runner 生成 source-only `compatibility-matrix.json` 和 `release-boundaries.json` blocker artifacts；它们记录边界，不生成真实 Windows / fresh-machine / daemon write / release approval 证据
-- Local release soak runner 可生成 `target/reports/releases/<candidate-name>/` 候选证据，覆盖 doctor、dashboard HTTP 回归、product smoke、first-run simulation、support bundle、redacted command logs、secret/artifact scan、release evidence secret scan、support bundle / product smoke SHA-256 manifest 和 Local Alpha evidence summary；它不生成 Windows runner、真实 fresh-machine、remote/team、daemon writes、上传、tag、安装包或发布认证证据
-- Release evidence index 可把候选 evidence root 下的 Local Alpha evidence summary 与 product readiness gate 合并为 present / missing / not_verified / blocked 的本地只读索引；它只输出 JSON/Markdown，不生成缺失 evidence、不批准 release、不上传文件
-- Provider certification preflight 可校验本地 provider config shape 并列出 live evidence preflight 缺口；显式 live evidence runner 只生成 provider preflight 可读取的 evidence files，配置示例本身不是 live evidence，必须显式运行 runner 才能生成 live evidence；runner 用于记录本次配置下的 endpoint reachability、decision probe、self-revision parse probe、错误处理和 redaction review provenance，不输出 API key、URL userinfo、path secret、query secret、model id、request body、response body 或 provider-native payload；live evidence 只有在 provider、status、expected evidence_kind、`mode = live`、非空 `generated_at`、`local_only = false`、`endpoint_reached = true`、`redaction_reviewed = true`、`request_outcome = passed` 和带显式 `exit_code = 0` 的成功 command evidence 同时满足时才算 present；stub/simulated runner 只能生成本地模拟证据，不能让 `live_certified = true`；即便 preflight 输出 `live_certified = true`，也只表示 config preflight 通过且四类 live evidence present，不代表 provider 输出质量、SLA、provider gateway、Local Alpha / Beta / GA / production-ready、production readiness 或 release approval
-- Packaging preflight 可区分 source-only soak artifacts 与真实 binary archive / installer / service manager / auto-updater evidence；新增 archive manifest / SHA-256 evidence 生成入口只校验已存在 archive 是否可解析为对应 `.tar.gz` / `.zip`、文件大小和 SHA-256，不构建二进制；缺少真实打包证据、纯文本占位、截断 archive、零字节占位、部分平台 archive、缺失 manifest 或 manifest mismatch 时保持 blocked，不创建 tag、安装包、上传或发布认证证据
-- Richer memory semantics projection 已提供只读 evidence relation / episode summary / semantic claim / procedural memory / durable self-model write 状态投影；它不新增 durable memory layer 写路径，也不是 full ranking engine
-- `first-run-bootstrap-smoke-local.sh` 已提供 `bootstrap-local -> doctor` 的本地 fresh-machine simulation evidence，包含 env 隔离、输出目录隔离、`doctor.json` / `summary.json` 和 isolated SQLite 证据；但真实 fresh-machine install / Windows runner 实机验证仍需单独记录，当前本机没有 `pwsh` 时，PowerShell runtime parity 只能视为待补证据
-- SQLite backup / restore 本地脚本门禁已覆盖 roundtrip、拒绝覆盖、拒绝 live DB 子目录备份、拒绝 in-memory / invalid URL 和拒绝 `..` restore target；这不是远程备份、云同步或生产灾备证明
-
-## 对外描述建议
-
-如果要给协作者一句话描述当前项目，建议用下面这个口径：
-
-“这是一个 Rust 编写的本机 MCP `stdio` memory demo，已经打通事件写入、快照构建、最小决策门控、反思修订，以及由 trigger ledger、证据门槛和慢更新约束保护的 automatic self-revision MVP；但它仍然是本地 demo，不是完整自治代理系统。”
+旧 schema、工具数、验证基线和分支状态已完整保留在[带日期的历史状态](project-status-history-2026-10-09.md)。历史 70 项 baseline、schema5 / schema6 阶段报告都是当时证据；以最终核对解释其增量，不覆盖或美化旧结果。

@@ -48,7 +48,10 @@ required = true
     assert!(!config.dashboard.sse_enabled);
     assert!(config.dashboard.open_browser);
     assert!(config.dashboard.required);
-    assert!(config.dashboard.validate().is_ok());
+    assert_eq!(
+        config.dashboard.validate().unwrap_err(),
+        "dashboard.host must be localhost or a loopback IP while dashboard authentication is unavailable"
+    );
 }
 
 #[test]
@@ -71,4 +74,37 @@ fn dashboard_rejects_base_path_without_leading_slash() {
         config.dashboard.validate().unwrap_err(),
         "dashboard.base_path must start with /"
     );
+}
+
+#[test]
+fn enabled_dashboard_rejects_non_loopback_hosts_without_authentication() {
+    for host in ["0.0.0.0", "192.168.1.20", "example.test"] {
+        let mut config = AppConfig::default();
+        config.dashboard.enabled = true;
+        config.dashboard.host = host.to_string();
+
+        assert_eq!(
+            config.dashboard.validate().unwrap_err(),
+            "dashboard.host must be localhost or a loopback IP while dashboard authentication is unavailable"
+        );
+    }
+}
+
+#[test]
+fn enabled_dashboard_accepts_localhost_and_loopback_ip_ranges() {
+    for host in ["localhost", "LOCALHOST", "127.0.0.1", "127.12.34.56", "::1"] {
+        let mut config = AppConfig::default();
+        config.dashboard.enabled = true;
+        config.dashboard.host = host.to_string();
+
+        assert!(config.dashboard.validate().is_ok(), "host={host}");
+    }
+}
+
+#[test]
+fn disabled_dashboard_may_retain_non_loopback_config_without_exposure() {
+    let mut config = AppConfig::default();
+    config.dashboard.host = "0.0.0.0".to_string();
+
+    assert!(config.dashboard.validate().is_ok());
 }

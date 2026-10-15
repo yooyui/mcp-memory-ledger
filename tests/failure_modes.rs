@@ -13,9 +13,10 @@ use agent_llm_mm::{
         event::Event,
         identity_core::IdentityCore,
         reflection::Reflection,
+        self_model_version::{SelfModelVersion, SelfModelVersionKind},
         self_revision::TriggerType,
-        snapshot::SnapshotBudget,
-        types::{EventKind, Mode, Namespace, Owner},
+        snapshot::{SnapshotBudget, SnapshotTimeWindow},
+        types::{EventKind, MemoryScope, Mode, Namespace, Owner},
     },
     error::AppError,
     ports::{
@@ -119,6 +120,16 @@ async fn reflection_commit_failure_rolls_back_claim_identity_commitment_and_audi
         ClaimStatus::Active
     );
     assert!(deps.claim("id-1:replacement").is_none());
+    assert_eq!(
+        deps.state
+            .lock()
+            .unwrap()
+            .committed
+            .self_model_versions
+            .len(),
+        1
+    );
+    assert!(deps.state.lock().unwrap().committed.receipts.is_empty());
     assert_eq!(
         deps.identity().canonical_claims(),
         &["identity:self=architect".to_string()]
@@ -342,7 +353,7 @@ async fn auto_reflection_rejects_identity_patch_without_minimum_support_and_reco
             StoredClaim::new(
                 "claim-supporting-1".to_string(),
                 ClaimDraft::new(
-                    Owner::Self_,
+                    Owner::World,
                     "self.role",
                     "is",
                     "principal_architect",
@@ -361,7 +372,7 @@ async fn auto_reflection_rejects_identity_patch_without_minimum_support_and_reco
     let result = auto_reflect_if_needed::execute(
         &deps,
         AutoReflectInput::for_conflict(
-            Namespace::self_(),
+            Namespace::world(),
             vec!["conflict".to_string(), "identity".to_string()],
         ),
     )
@@ -373,6 +384,94 @@ async fn auto_reflection_rejects_identity_patch_without_minimum_support_and_reco
         Some(TriggerLedgerStatus::Rejected)
     );
     assert!(deps.reflection("id-2").is_none());
+}
+
+#[tokio::test]
+async fn auto_reflection_ignores_unrelated_episodes_for_identity_support() {
+    let deps = test_support::deps_for_failure_modes();
+    deps.set_self_revision_proposal(test_support::identity_only_auto_reflection_proposal());
+    deps.seed_identity_support_context_without_provenance(
+        vec![
+            "episode-unrelated-001".to_string(),
+            "episode-unrelated-002".to_string(),
+            "episode-unrelated-003".to_string(),
+        ],
+        (1..=3)
+            .map(|index| {
+                StoredClaim::new(
+                    format!("claim-supporting-{index}"),
+                    ClaimDraft::new(
+                        Owner::World,
+                        "self.role",
+                        "is",
+                        "principal_architect",
+                        Mode::Observed,
+                    )
+                    .with_namespace(Namespace::world()),
+                    ClaimStatus::Active,
+                )
+            })
+            .collect(),
+    );
+
+    let error = auto_reflect_if_needed::execute(
+        &deps,
+        AutoReflectInput::for_conflict(
+            Namespace::world(),
+            vec!["conflict".to_string(), "identity".to_string()],
+        ),
+    )
+    .await
+    .expect_err("unrelated episodes must not satisfy cross-episode identity support");
+
+    assert!(
+        error
+            .to_string()
+            .contains("requires support across at least 2 episodes"),
+        "unexpected rejection: {error}"
+    );
+    assert_eq!(
+        deps.latest_trigger_status(),
+        Some(TriggerLedgerStatus::Rejected)
+    );
+    assert!(deps.reflections().is_empty());
+    assert_eq!(
+        deps.identity().canonical_claims(),
+        &["identity:self=architect".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn auto_reflection_ignores_cross_scope_evidence_links_for_identity_support() {
+    let deps = test_support::deps_for_failure_modes();
+    deps.set_self_revision_proposal(test_support::identity_only_auto_reflection_proposal());
+    deps.seed_identity_support_context_with_cross_scope_evidence_links();
+
+    let error = auto_reflect_if_needed::execute(
+        &deps,
+        AutoReflectInput::for_conflict(
+            Namespace::world(),
+            vec!["conflict".to_string(), "identity".to_string()],
+        ),
+    )
+    .await
+    .expect_err("cross-scope evidence links must not satisfy identity episode support");
+
+    assert!(
+        error
+            .to_string()
+            .contains("requires support across at least 2 episodes"),
+        "unexpected rejection: {error}"
+    );
+    assert_eq!(
+        deps.latest_trigger_status(),
+        Some(TriggerLedgerStatus::Rejected)
+    );
+    assert!(deps.reflections().is_empty());
+    assert_eq!(
+        deps.identity().canonical_claims(),
+        &["identity:self=architect".to_string()]
+    );
 }
 
 #[tokio::test]
@@ -537,11 +636,13 @@ async fn auto_reflection_rejects_model_proposed_evidence_ids_that_do_not_match_q
             chrono::DateTime::parse_from_rfc3339("2026-03-23T10:03:00Z")
                 .unwrap()
                 .with_timezone(&Utc),
-            Event::new(
-                Owner::Self_,
+            Event::new_with_namespace(
+                Owner::World,
+                Namespace::for_project("agent-llm-mm"),
                 EventKind::Action,
                 "self attempted a conflicting overwrite",
-            ),
+            )
+            .unwrap(),
         ),
         StoredEvent::new(
             "evt-conflict-4".to_string(),
@@ -559,11 +660,13 @@ async fn auto_reflection_rejects_model_proposed_evidence_ids_that_do_not_match_q
             chrono::DateTime::parse_from_rfc3339("2026-03-23T10:05:00Z")
                 .unwrap()
                 .with_timezone(&Utc),
-            Event::new(
-                Owner::Self_,
+            Event::new_with_namespace(
+                Owner::World,
+                Namespace::for_project("agent-llm-mm"),
                 EventKind::Action,
                 "self retried the conflicting overwrite",
-            ),
+            )
+            .unwrap(),
         ),
     ]);
     deps.set_self_revision_proposal(
@@ -584,7 +687,7 @@ async fn auto_reflection_rejects_model_proposed_evidence_ids_that_do_not_match_q
     let result = auto_reflect_if_needed::execute(
         &deps,
         AutoReflectInput::for_conflict(
-            Namespace::self_(),
+            Namespace::world(),
             vec!["conflict".to_string(), "commitment".to_string()],
         ),
     )
@@ -619,22 +722,26 @@ async fn auto_reflection_keeps_explicit_ids_authoritative_when_query_limit_only_
             chrono::DateTime::parse_from_rfc3339("2026-03-23T10:01:00Z")
                 .unwrap()
                 .with_timezone(&Utc),
-            Event::new(
-                Owner::Self_,
+            Event::new_with_namespace(
+                Owner::World,
+                Namespace::for_project("agent-llm-mm"),
                 EventKind::Action,
                 "rollback after violating a hard commitment",
-            ),
+            )
+            .unwrap(),
         ),
         StoredEvent::new(
             "evt-failure-2".to_string(),
             chrono::DateTime::parse_from_rfc3339("2026-03-23T10:02:00Z")
                 .unwrap()
                 .with_timezone(&Utc),
-            Event::new(
-                Owner::Self_,
+            Event::new_with_namespace(
+                Owner::World,
+                Namespace::for_project("agent-llm-mm"),
                 EventKind::Action,
                 "second rollback after violating the same hard commitment",
-            ),
+            )
+            .unwrap(),
         ),
     ]);
     deps.set_self_revision_proposal(
@@ -698,22 +805,26 @@ async fn auto_reflection_applies_query_limit_within_current_trigger_window_when_
             chrono::DateTime::parse_from_rfc3339("2026-03-23T10:01:00Z")
                 .unwrap()
                 .with_timezone(&Utc),
-            Event::new(
-                Owner::Self_,
+            Event::new_with_namespace(
+                Owner::World,
+                Namespace::for_project("agent-llm-mm"),
                 EventKind::Action,
                 "rollback after violating a hard commitment",
-            ),
+            )
+            .unwrap(),
         ),
         StoredEvent::new(
             "evt-failure-2".to_string(),
             chrono::DateTime::parse_from_rfc3339("2026-03-23T10:02:00Z")
                 .unwrap()
                 .with_timezone(&Utc),
-            Event::new(
-                Owner::Self_,
+            Event::new_with_namespace(
+                Owner::World,
+                Namespace::for_project("agent-llm-mm"),
                 EventKind::Action,
                 "second rollback after violating the same hard commitment",
-            ),
+            )
+            .unwrap(),
         ),
     ]);
     deps.set_self_revision_proposal(
@@ -1332,7 +1443,7 @@ async fn auto_reflection_rejects_proposed_evidence_query_zero_limit_instead_of_m
     let result = auto_reflect_if_needed::execute(
         &deps,
         AutoReflectInput::for_conflict(
-            Namespace::self_(),
+            Namespace::world(),
             vec!["conflict".to_string(), "commitment".to_string()],
         ),
     )
@@ -1420,7 +1531,7 @@ async fn auto_reflection_intersects_proposed_evidence_query_with_current_trigger
                 .unwrap()
                 .with_timezone(&Utc),
             Event::new(
-                Owner::Self_,
+                Owner::World,
                 EventKind::Action,
                 "self attempted a conflicting overwrite",
             ),
@@ -1442,7 +1553,7 @@ async fn auto_reflection_intersects_proposed_evidence_query_with_current_trigger
                 .unwrap()
                 .with_timezone(&Utc),
             Event::new(
-                Owner::Self_,
+                Owner::World,
                 EventKind::Action,
                 "self retried the conflicting overwrite",
             ),
@@ -1466,7 +1577,7 @@ async fn auto_reflection_intersects_proposed_evidence_query_with_current_trigger
     let result = auto_reflect_if_needed::execute(
         &deps,
         AutoReflectInput::for_conflict(
-            Namespace::self_(),
+            Namespace::world(),
             vec!["conflict".to_string(), "commitment".to_string()],
         ),
     )
@@ -1492,11 +1603,73 @@ async fn auto_reflection_intersects_proposed_evidence_query_with_current_trigger
         handled_entry.evidence_window,
         vec![
             "evt-conflict-5".to_string(),
-            "evt-conflict-4".to_string(),
             "evt-conflict-3".to_string(),
             "evt-conflict-2".to_string(),
-            "evt-conflict-1".to_string(),
         ]
+    );
+}
+
+#[tokio::test]
+async fn auto_reflection_normalizes_prefixed_proposal_evidence_ids_before_governance_and_audit() {
+    let deps = test_support::deps_for_failure_modes();
+    deps.seed_events(vec![
+        StoredEvent::new(
+            "evt-prefixed-conflict-1".to_string(),
+            chrono::DateTime::parse_from_rfc3339("2026-03-23T10:01:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            Event::new(
+                Owner::User,
+                EventKind::Conversation,
+                "user raised a possible commitment conflict",
+            ),
+        ),
+        StoredEvent::new(
+            "evt-prefixed-conflict-2".to_string(),
+            chrono::DateTime::parse_from_rfc3339("2026-03-23T10:02:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            Event::new(
+                Owner::World,
+                EventKind::Observation,
+                "current conflicting observation inside the trigger window",
+            ),
+        ),
+    ]);
+    deps.set_self_revision_proposal(
+        test_support::commitment_only_auto_reflection_proposal_with_policy(
+            vec![
+                "event:evt-prefixed-conflict-2".to_string(),
+                "evt-prefixed-conflict-2".to_string(),
+            ],
+            None,
+        ),
+    );
+
+    let result = auto_reflect_if_needed::execute(
+        &deps,
+        AutoReflectInput::for_conflict(
+            Namespace::world(),
+            vec!["conflict".to_string(), "commitment".to_string()],
+        ),
+    )
+    .await
+    .unwrap();
+
+    assert!(result.triggered);
+    assert_eq!(
+        result.evidence_event_ids,
+        vec!["evt-prefixed-conflict-2".to_string()]
+    );
+    assert_eq!(
+        result.diagnostics.selected_evidence_event_ids,
+        vec!["evt-prefixed-conflict-2".to_string()]
+    );
+    assert_eq!(
+        deps.latest_reflection()
+            .expect("handled auto-reflection should persist audit evidence")
+            .supporting_evidence_event_ids,
+        vec!["evt-prefixed-conflict-2".to_string()]
     );
 }
 
@@ -1651,7 +1824,7 @@ async fn auto_reflection_applies_recency_filters_from_proposed_evidence_query() 
     let result = auto_reflect_if_needed::execute(
         &deps,
         AutoReflectInput::for_conflict(
-            Namespace::self_(),
+            Namespace::world(),
             vec!["conflict".to_string(), "commitment".to_string()],
         ),
     )
@@ -1727,7 +1900,7 @@ async fn auto_reflection_intersects_proposed_event_id_prefix_with_trigger_window
     let result = auto_reflect_if_needed::execute(
         &deps,
         AutoReflectInput::for_conflict(
-            Namespace::self_(),
+            Namespace::world(),
             vec!["conflict".to_string(), "commitment".to_string()],
         ),
     )
@@ -1756,12 +1929,13 @@ async fn auto_reflection_rejected_identity_attempt_does_not_start_cooldown_for_l
         vec![StoredClaim::new(
             "claim-supporting-1".to_string(),
             ClaimDraft::new(
-                Owner::Self_,
+                Owner::World,
                 "self.role",
                 "is",
                 "principal_architect",
                 Mode::Observed,
-            ),
+            )
+            .with_namespace(Namespace::world()),
             ClaimStatus::Active,
         )],
     );
@@ -1769,7 +1943,7 @@ async fn auto_reflection_rejected_identity_attempt_does_not_start_cooldown_for_l
     let first = auto_reflect_if_needed::execute(
         &deps,
         AutoReflectInput::for_conflict(
-            Namespace::self_(),
+            Namespace::world(),
             vec!["conflict".to_string(), "identity".to_string()],
         ),
     )
@@ -1796,23 +1970,25 @@ async fn auto_reflection_rejected_identity_attempt_does_not_start_cooldown_for_l
             StoredClaim::new(
                 "claim-supporting-1".to_string(),
                 ClaimDraft::new(
-                    Owner::Self_,
+                    Owner::World,
                     "self.role",
                     "is",
                     "principal_architect",
                     Mode::Observed,
-                ),
+                )
+                .with_namespace(Namespace::world()),
                 ClaimStatus::Active,
             ),
             StoredClaim::new(
                 "claim-supporting-2".to_string(),
                 ClaimDraft::new(
-                    Owner::Self_,
+                    Owner::World,
                     "self.role",
                     "is",
                     "principal_architect",
                     Mode::Observed,
-                ),
+                )
+                .with_namespace(Namespace::world()),
                 ClaimStatus::Active,
             ),
             StoredClaim::new(
@@ -1823,7 +1999,8 @@ async fn auto_reflection_rejected_identity_attempt_does_not_start_cooldown_for_l
                     "is",
                     "principal_architect",
                     Mode::Observed,
-                ),
+                )
+                .with_namespace(Namespace::world()),
                 ClaimStatus::Active,
             ),
         ],
@@ -1832,7 +2009,7 @@ async fn auto_reflection_rejected_identity_attempt_does_not_start_cooldown_for_l
     let second = auto_reflect_if_needed::execute(
         &deps,
         AutoReflectInput::for_conflict(
-            Namespace::self_(),
+            Namespace::world(),
             vec!["conflict".to_string(), "identity".to_string()],
         ),
     )
@@ -1856,11 +2033,12 @@ async fn auto_reflection_rejected_identity_attempt_does_not_start_cooldown_for_l
 async fn auto_reflection_handled_ledger_failure_rolls_back_reflection_updates() {
     let deps = test_support::deps_with_fail_point(FailPoint::AppendHandledTriggerLedger);
     deps.set_self_revision_proposal(test_support::commitment_only_auto_reflection_proposal());
+    let evidence_links_before = deps.evidence_links();
 
     let result = auto_reflect_if_needed::execute(
         &deps,
         AutoReflectInput::for_conflict(
-            Namespace::self_(),
+            Namespace::world(),
             vec!["conflict".to_string(), "commitment".to_string()],
         ),
     )
@@ -1878,16 +2056,33 @@ async fn auto_reflection_handled_ledger_failure_rolls_back_reflection_updates() 
         )]
     );
     assert_eq!(
-        deps.latest_trigger_status(),
-        Some(TriggerLedgerStatus::Rejected)
+        deps.state
+            .lock()
+            .unwrap()
+            .committed
+            .self_model_versions
+            .len(),
+        1
     );
+    assert!(deps.state.lock().unwrap().committed.receipts.is_empty());
+    assert_eq!(
+        deps.identity().canonical_claims(),
+        &["identity:self=architect".to_string()]
+    );
+    assert_eq!(deps.evidence_links(), evidence_links_before);
+    let failed_entries = deps.trigger_entries();
+    assert_eq!(failed_entries.len(), 1);
+    assert_eq!(failed_entries[0].status, TriggerLedgerStatus::Rejected);
+    assert_eq!(failed_entries[0].reflection_id, None);
+    assert_eq!(failed_entries[0].handled_at, None);
+    assert_eq!(failed_entries[0].cooldown_until, None);
 
     deps.clear_fail_point();
 
     let retry = auto_reflect_if_needed::execute(
         &deps,
         AutoReflectInput::for_conflict(
-            Namespace::self_(),
+            Namespace::world(),
             vec!["conflict".to_string(), "commitment".to_string()],
         ),
     )
@@ -1900,6 +2095,92 @@ async fn auto_reflection_handled_ledger_failure_rolls_back_reflection_updates() 
         Some(TriggerLedgerStatus::Handled)
     );
     assert_eq!(deps.reflections().len(), 1);
+}
+
+#[tokio::test]
+async fn auto_reflection_commit_failure_records_only_rejected_audit_and_rolls_back_deeper_updates()
+{
+    let deps = test_support::deps_with_fail_point(FailPoint::CommitReflection);
+    deps.set_self_revision_proposal(
+        test_support::identity_and_commitment_auto_reflection_proposal(),
+    );
+    deps.seed_identity_support_context(
+        vec![
+            "episode-support-001".to_string(),
+            "episode-support-002".to_string(),
+        ],
+        (1..=3)
+            .map(|index| {
+                StoredClaim::new(
+                    format!("claim-supporting-{index}"),
+                    ClaimDraft::new(
+                        Owner::World,
+                        "self.role",
+                        "is",
+                        "principal_architect",
+                        Mode::Observed,
+                    )
+                    .with_namespace(Namespace::world()),
+                    ClaimStatus::Active,
+                )
+            })
+            .collect(),
+    );
+    let evidence_links_before = deps.evidence_links();
+
+    let result = auto_reflect_if_needed::execute(
+        &deps,
+        AutoReflectInput::for_conflict(
+            Namespace::world(),
+            vec!["conflict".to_string(), "identity".to_string()],
+        ),
+    )
+    .await;
+
+    assert!(
+        matches!(result, Err(AppError::Message(message)) if message == "injected reflection commit failure")
+    );
+    assert_eq!(
+        deps.state
+            .lock()
+            .unwrap()
+            .committed
+            .self_model_versions
+            .len(),
+        1
+    );
+    assert!(deps.state.lock().unwrap().committed.receipts.is_empty());
+    assert_eq!(
+        deps.identity().canonical_claims(),
+        &["identity:self=architect".to_string()]
+    );
+    assert_eq!(
+        deps.commitments(),
+        vec![Commitment::new(
+            Owner::Self_,
+            "forbid:write_identity_core_directly",
+        )]
+    );
+    assert!(deps.reflections().is_empty());
+    assert_eq!(deps.evidence_links(), evidence_links_before);
+    for claim_id in [
+        "claim-supporting-1",
+        "claim-supporting-2",
+        "claim-supporting-3",
+    ] {
+        assert_eq!(
+            deps.claim(claim_id)
+                .expect("supporting claim must remain")
+                .status,
+            ClaimStatus::Active
+        );
+    }
+    let entries = deps.trigger_entries();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].status, TriggerLedgerStatus::Rejected);
+    assert_eq!(entries[0].reflection_id, None);
+    assert_eq!(entries[0].handled_at, None);
+    assert_eq!(entries[0].cooldown_until, None);
 }
 
 #[tokio::test]
@@ -2141,6 +2422,9 @@ mod test_support {
 
     pub fn budgeted_snapshot() -> BuildSelfSnapshotInput {
         BuildSelfSnapshotInput {
+            scope: MemoryScope::legacy_unscoped(),
+            evidence_manifest: None,
+            time_window: SnapshotTimeWindow::unbounded(),
             budget: SnapshotBudget::new(3),
         }
     }
@@ -2217,6 +2501,17 @@ mod test_support {
             confidence: None,
         }
     }
+
+    pub fn identity_and_commitment_auto_reflection_proposal()
+    -> agent_llm_mm::domain::self_revision::SelfRevisionProposal {
+        let mut proposal = identity_only_auto_reflection_proposal();
+        proposal.machine_patch.commitment_patch = Some(
+            agent_llm_mm::domain::self_revision::SelfRevisionCommitmentPatch::new(vec![
+                "prefer:evidence_backed_identity_updates".to_string(),
+            ]),
+        );
+        proposal
+    }
 }
 
 #[derive(Clone)]
@@ -2243,11 +2538,14 @@ struct State {
 
 #[derive(Clone)]
 struct CommittedState {
+    self_model_versions: Vec<SelfModelVersion>,
+    receipts: Vec<(String, agent_llm_mm::ports::StoredWriteReceipt)>,
     claims: Vec<StoredClaim>,
     commitments: Vec<Commitment>,
     identity: IdentityCore,
     event_references: Vec<String>,
     episode_references: Vec<String>,
+    episode_events: Vec<(String, String)>,
     reflections: Vec<StoredReflection>,
     trigger_ledger: Vec<StoredTriggerLedgerEntry>,
     evidence_links: Vec<(String, String)>,
@@ -2256,6 +2554,7 @@ struct CommittedState {
 
 #[derive(Default)]
 struct PendingIngest {
+    receipts: Vec<(String, agent_llm_mm::ports::StoredWriteReceipt)>,
     claims: Vec<StoredClaim>,
     evidence_links: Vec<(String, String)>,
     events: Vec<StoredEvent>,
@@ -2263,6 +2562,9 @@ struct PendingIngest {
 
 #[derive(Default)]
 struct PendingReflection {
+    self_model_versions: Vec<SelfModelVersion>,
+    expected_self_model_version: Option<u64>,
+    receipts: Vec<(String, agent_llm_mm::ports::StoredWriteReceipt)>,
     claims: Vec<StoredClaim>,
     evidence_links: Vec<(String, String)>,
     reflections: Vec<StoredReflection>,
@@ -2276,6 +2578,8 @@ impl Default for State {
     fn default() -> Self {
         Self {
             committed: CommittedState {
+                self_model_versions: Vec::new(),
+                receipts: Vec::new(),
                 claims: vec![StoredClaim::new(
                     "claim-conflict".to_string(),
                     ClaimDraft::new(Owner::Self_, "self.role", "is", "architect", Mode::Observed),
@@ -2294,6 +2598,10 @@ impl Default for State {
                     "event:baseline".to_string(),
                 ],
                 episode_references: vec!["episode:failure-modes".to_string()],
+                episode_events: vec![(
+                    "episode:failure-modes".to_string(),
+                    "evt-reflection-1".to_string(),
+                )],
                 reflections: Vec::new(),
                 trigger_ledger: Vec::new(),
                 evidence_links: Vec::new(),
@@ -2320,8 +2628,52 @@ impl Default for State {
     }
 }
 
+fn identity_support_events_for_claims(
+    claims: &[StoredClaim],
+    recorded_at: DateTime<Utc>,
+) -> Vec<StoredEvent> {
+    claims
+        .iter()
+        .enumerate()
+        .map(|(index, claim)| {
+            let scope = MemoryScope::for_namespace(claim.claim.namespace().clone());
+            StoredEvent::new(
+                format!("identity-support-event-{index}"),
+                recorded_at,
+                Event::new_with_namespace(
+                    scope
+                        .owner()
+                        .expect("namespace-derived memory scope is explicit"),
+                    claim.claim.namespace().clone(),
+                    EventKind::Observation,
+                    format!("identity support event {index}"),
+                )
+                .expect("claim namespace already matches a legal owner"),
+            )
+        })
+        .collect()
+}
+
 impl FailureModeDeps {
-    fn new(state: State) -> Self {
+    fn new(mut state: State) -> Self {
+        // Seed the fixture baseline exactly once, after all intentional fixture setup.
+        // Subsequent direct projection changes must be detected as drift.
+        assert!(state.committed.self_model_versions.is_empty());
+        state.committed.self_model_versions.push(SelfModelVersion {
+            version: 0,
+            previous_version: None,
+            kind: SelfModelVersionKind::InitializationBaseline,
+            reflection_id: None,
+            recorded_at: state.now,
+            effective_at: Some(state.now),
+            identity: state.committed.identity.clone(),
+            commitments: state.committed.commitments.clone(),
+            identity_written: false,
+            commitments_written: false,
+            identity_source_version: 0,
+            commitment_source_version: 0,
+            rollback_target_version: None,
+        });
         Self {
             state: Arc::new(Mutex::new(state)),
         }
@@ -2399,6 +2751,10 @@ impl FailureModeDeps {
             .cloned()
     }
 
+    fn trigger_entries(&self) -> Vec<StoredTriggerLedgerEntry> {
+        self.state.lock().unwrap().committed.trigger_ledger.clone()
+    }
+
     fn evidence_query_trace(&self) -> Vec<EvidenceQuery> {
         self.state.lock().unwrap().evidence_query_trace.clone()
     }
@@ -2419,9 +2775,140 @@ impl FailureModeDeps {
         episode_references: Vec<String>,
         claims: Vec<StoredClaim>,
     ) {
+        let evidence_links = claims
+            .iter()
+            .enumerate()
+            .map(|(index, claim)| {
+                (
+                    claim.claim_id.clone(),
+                    format!("identity-support-event-{index}"),
+                )
+            })
+            .collect::<Vec<_>>();
+        let episode_events = if episode_references.is_empty() {
+            Vec::new()
+        } else {
+            evidence_links
+                .iter()
+                .enumerate()
+                .map(|(index, (_, event_id))| {
+                    (
+                        episode_references[index % episode_references.len()].clone(),
+                        event_id.clone(),
+                    )
+                })
+                .collect()
+        };
+        let mut state = self.state.lock().unwrap();
+        let recorded_at = state.now;
+        let evidence_events = identity_support_events_for_claims(&claims, recorded_at);
+        state
+            .committed
+            .events
+            .retain(|event| !event.event_id.starts_with("identity-support-event-"));
+        state.committed.events.extend(evidence_events);
+        state.committed.episode_references = episode_references;
+        state.committed.episode_events = episode_events;
+        state.committed.claims = claims;
+        state.committed.evidence_links = evidence_links;
+    }
+
+    fn seed_identity_support_context_with_cross_scope_evidence_links(&self) {
+        let world_claims = (1..=3)
+            .map(|index| {
+                StoredClaim::new(
+                    format!("claim-supporting-{index}"),
+                    ClaimDraft::new(
+                        Owner::World,
+                        "self.role",
+                        "is",
+                        "principal_architect",
+                        Mode::Observed,
+                    )
+                    .with_namespace(Namespace::world()),
+                    ClaimStatus::Active,
+                )
+            })
+            .collect::<Vec<_>>();
+        let foreign_namespace = Namespace::for_project("other");
+        let mut state = self.state.lock().unwrap();
+        let recorded_at = state.now;
+        let in_scope_event = StoredEvent::new(
+            "identity-support-event-0".to_string(),
+            recorded_at,
+            Event::new(
+                Owner::World,
+                EventKind::Observation,
+                "in-scope identity support event",
+            ),
+        );
+        let foreign_events = (1..=2)
+            .map(|index| {
+                StoredEvent::new(
+                    format!("identity-support-event-{index}"),
+                    recorded_at,
+                    Event::new_with_namespace(
+                        Owner::World,
+                        foreign_namespace.clone(),
+                        EventKind::Observation,
+                        format!("foreign identity support event {index}"),
+                    )
+                    .unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        state
+            .committed
+            .events
+            .retain(|event| !event.event_id.starts_with("identity-support-event-"));
+        state.committed.events.push(in_scope_event);
+        state.committed.events.extend(foreign_events);
+        state.committed.claims = world_claims;
+        state.committed.evidence_links = vec![
+            (
+                "claim-supporting-1".to_string(),
+                "identity-support-event-0".to_string(),
+            ),
+            (
+                "claim-supporting-2".to_string(),
+                "identity-support-event-1".to_string(),
+            ),
+            (
+                "claim-supporting-3".to_string(),
+                "identity-support-event-2".to_string(),
+            ),
+        ];
+        state.committed.episode_references = vec![
+            "episode:world-a".to_string(),
+            "episode:foreign-a".to_string(),
+            "episode:foreign-b".to_string(),
+        ];
+        state.committed.episode_events = vec![
+            (
+                "episode:world-a".to_string(),
+                "identity-support-event-0".to_string(),
+            ),
+            (
+                "episode:foreign-a".to_string(),
+                "identity-support-event-1".to_string(),
+            ),
+            (
+                "episode:foreign-b".to_string(),
+                "identity-support-event-2".to_string(),
+            ),
+        ];
+    }
+
+    fn seed_identity_support_context_without_provenance(
+        &self,
+        episode_references: Vec<String>,
+        claims: Vec<StoredClaim>,
+    ) {
         let mut state = self.state.lock().unwrap();
         state.committed.episode_references = episode_references;
+        state.committed.episode_events.clear();
         state.committed.claims = claims;
+        state.committed.evidence_links.clear();
     }
 
     fn seed_failure_window(&self, events: Vec<(&str, &str)>) {
@@ -2438,7 +2925,13 @@ impl FailureModeDeps {
                     ))
                     .unwrap()
                     .with_timezone(&Utc),
-                    Event::new(Owner::Self_, EventKind::Action, summary),
+                    Event::new_with_namespace(
+                        Owner::World,
+                        Namespace::for_project("agent-llm-mm"),
+                        EventKind::Action,
+                        summary,
+                    )
+                    .unwrap(),
                 )
             })
             .collect();
@@ -2481,6 +2974,7 @@ impl FailureModeDeps {
     }
 
     fn seed_periodic_cooldown(&self, trigger_key: &str) {
+        self.seed_project_reflection_event();
         self.state
             .lock()
             .unwrap()
@@ -2509,6 +3003,7 @@ impl FailureModeDeps {
     }
 
     fn seed_periodic_watermark_suppression(&self, trigger_key: &str) {
+        self.seed_project_reflection_event();
         self.state
             .lock()
             .unwrap()
@@ -2624,6 +3119,31 @@ impl EventStore for FailureModeDeps {
             .committed
             .event_references
             .clone())
+    }
+
+    async fn list_recorded_at_for_snapshot_manifest(
+        &self,
+        scope: &MemoryScope,
+        evidence_manifest: &[agent_llm_mm::domain::event::EventReference],
+    ) -> Result<Vec<DateTime<Utc>>, AppError> {
+        let state = self.state.lock().unwrap();
+        Ok(state
+            .committed
+            .events
+            .iter()
+            .filter(|event| {
+                scope
+                    .owner()
+                    .is_none_or(|owner| event.event.owner() == owner)
+                    && scope
+                        .namespace()
+                        .is_none_or(|namespace| event.event.namespace() == namespace)
+                    && evidence_manifest
+                        .iter()
+                        .any(|reference| reference.event_id() == event.event_id)
+            })
+            .map(|event| event.recorded_at)
+            .collect())
     }
 
     async fn query_evidence_event_ids(
@@ -2752,14 +3272,17 @@ impl EpisodeStore for FailureModeDeps {
     async fn record_event_in_episode(
         &self,
         episode_reference: String,
-        _event_id: String,
+        event_id: String,
     ) -> Result<(), AppError> {
-        self.state
-            .lock()
-            .unwrap()
+        let mut state = self.state.lock().unwrap();
+        state
             .committed
             .episode_references
-            .push(episode_reference);
+            .push(episode_reference.clone());
+        state
+            .committed
+            .episode_events
+            .push((episode_reference, event_id));
         Ok(())
     }
 
@@ -2771,6 +3294,90 @@ impl EpisodeStore for FailureModeDeps {
             .committed
             .episode_references
             .clone())
+    }
+
+    async fn list_episode_references_supporting_claims(
+        &self,
+        scope: &MemoryScope,
+        claim_ids: &[String],
+    ) -> Result<Vec<String>, AppError> {
+        let (Some(owner), Some(namespace)) = (scope.owner(), scope.namespace()) else {
+            return Err(AppError::InvalidParams(
+                "claim-to-evidence-to-episode lookup requires an explicit namespace".to_string(),
+            ));
+        };
+        let state = self.state.lock().unwrap();
+        let scoped_claim_ids = state
+            .committed
+            .claims
+            .iter()
+            .filter(|claim| {
+                claim_ids.contains(&claim.claim_id)
+                    && claim.claim.owner() == owner
+                    && claim.claim.namespace() == namespace
+            })
+            .map(|claim| claim.claim_id.clone())
+            .collect::<Vec<_>>();
+        let linked_event_ids = state
+            .committed
+            .evidence_links
+            .iter()
+            .filter(|(claim_id, event_id)| {
+                scoped_claim_ids.contains(claim_id)
+                    && state.committed.events.iter().any(|event| {
+                        event.event_id == *event_id
+                            && event.event.owner() == owner
+                            && event.event.namespace() == namespace
+                    })
+            })
+            .map(|(_, event_id)| event_id.clone())
+            .collect::<Vec<_>>();
+        Ok(state
+            .committed
+            .episode_events
+            .iter()
+            .filter(|(_, event_id)| linked_event_ids.contains(event_id))
+            .fold(Vec::new(), |mut episodes, (episode_reference, _)| {
+                if !episodes.contains(episode_reference) {
+                    episodes.push(episode_reference.clone());
+                }
+                episodes
+            }))
+    }
+
+    async fn list_episode_references_in_scope(
+        &self,
+        _scope: &MemoryScope,
+    ) -> Result<Vec<String>, AppError> {
+        self.list_episode_references().await
+    }
+
+    async fn list_episode_references_for_snapshot(
+        &self,
+        scope: &MemoryScope,
+        time_window: &SnapshotTimeWindow,
+    ) -> Result<Vec<String>, AppError> {
+        time_window.validate().map_err(AppError::from)?;
+        let state = self.state.lock().unwrap();
+        let has_qualifying_event = state.committed.events.iter().any(|event| {
+            scope
+                .owner()
+                .is_none_or(|owner| event.event.owner() == owner)
+                && scope
+                    .namespace()
+                    .is_none_or(|namespace| event.event.namespace() == namespace)
+                && time_window
+                    .recorded_after
+                    .is_none_or(|after| event.recorded_at >= after)
+                && time_window
+                    .recorded_before
+                    .is_none_or(|before| event.recorded_at <= before)
+        });
+        Ok(if has_qualifying_event {
+            state.committed.episode_references.clone()
+        } else {
+            Vec::new()
+        })
     }
 }
 
@@ -2902,6 +3509,47 @@ struct FailureModeIngestTransaction {
 
 #[async_trait]
 impl IngestTransaction for FailureModeIngestTransaction {
+    async fn load_event_for_ingest(
+        &mut self,
+        event_id: &str,
+    ) -> Result<Option<StoredEvent>, AppError> {
+        Ok(self
+            .deps
+            .state
+            .lock()
+            .unwrap()
+            .committed
+            .events
+            .iter()
+            .find(|event| event.event_id == event_id)
+            .cloned())
+    }
+    async fn load_write_receipt(
+        &mut self,
+        operation_id: &str,
+    ) -> Result<Option<agent_llm_mm::ports::StoredWriteReceipt>, AppError> {
+        Ok(self
+            .deps
+            .state
+            .lock()
+            .unwrap()
+            .committed
+            .receipts
+            .iter()
+            .find(|(id, _)| id == operation_id)
+            .map(|(_, receipt)| receipt.clone()))
+    }
+    async fn append_write_receipt(
+        &mut self,
+        request: &agent_llm_mm::ports::WriteReceiptRequest,
+        receipt: agent_llm_mm::ports::StoredWriteReceipt,
+        _recorded_at: DateTime<Utc>,
+    ) -> Result<(), AppError> {
+        self.pending
+            .receipts
+            .push((request.operation_id.clone(), receipt));
+        Ok(())
+    }
     async fn append_event(&mut self, event: StoredEvent) -> Result<(), AppError> {
         self.pending.events.push(event);
         Ok(())
@@ -2927,6 +3575,7 @@ impl IngestTransaction for FailureModeIngestTransaction {
 
     async fn commit(self: Box<Self>) -> Result<(), AppError> {
         let mut state = self.deps.state.lock().unwrap();
+        state.committed.receipts.extend(self.pending.receipts);
         state.committed.events.extend(self.pending.events);
         state
             .committed
@@ -2946,6 +3595,180 @@ struct FailureModeReflectionTransaction {
 
 #[async_trait]
 impl ReflectionTransaction for FailureModeReflectionTransaction {
+    async fn load_current_self_model_version(&mut self) -> Result<SelfModelVersion, AppError> {
+        let head = self
+            .pending
+            .self_model_versions
+            .last()
+            .cloned()
+            .or_else(|| {
+                self.deps
+                    .state
+                    .lock()
+                    .unwrap()
+                    .committed
+                    .self_model_versions
+                    .last()
+                    .cloned()
+            })
+            .ok_or_else(|| AppError::Message("missing fixture self-model baseline".into()))?;
+        if self.load_identity().await? != head.identity
+            || self.load_commitments().await? != head.commitments
+        {
+            return Err(AppError::Message("self-model projection drift".into()));
+        }
+        Ok(head)
+    }
+    async fn load_self_model_version(
+        &mut self,
+        version: u64,
+    ) -> Result<Option<SelfModelVersion>, AppError> {
+        Ok(self
+            .pending
+            .self_model_versions
+            .iter()
+            .find(|entry| entry.version == version)
+            .cloned()
+            .or_else(|| {
+                self.deps
+                    .state
+                    .lock()
+                    .unwrap()
+                    .committed
+                    .self_model_versions
+                    .iter()
+                    .find(|entry| entry.version == version)
+                    .cloned()
+            }))
+    }
+    async fn load_self_model_reflection(
+        &mut self,
+        reflection_id: &str,
+    ) -> Result<Option<StoredReflection>, AppError> {
+        Ok(self
+            .pending
+            .reflections
+            .iter()
+            .find(|entry| entry.reflection_id == reflection_id)
+            .cloned()
+            .or_else(|| {
+                self.deps
+                    .state
+                    .lock()
+                    .unwrap()
+                    .committed
+                    .reflections
+                    .iter()
+                    .find(|entry| entry.reflection_id == reflection_id)
+                    .cloned()
+            }))
+    }
+    async fn append_self_model_version(
+        &mut self,
+        expected_version: u64,
+        version: SelfModelVersion,
+    ) -> Result<(), AppError> {
+        let head = self
+            .pending
+            .self_model_versions
+            .last()
+            .cloned()
+            .or_else(|| {
+                self.deps
+                    .state
+                    .lock()
+                    .unwrap()
+                    .committed
+                    .self_model_versions
+                    .last()
+                    .cloned()
+            })
+            .ok_or_else(|| AppError::Message("missing fixture self-model baseline".into()))?;
+        if head.version != expected_version
+            || version.version != expected_version + 1
+            || version.previous_version != Some(expected_version)
+        {
+            return Err(AppError::InvalidParams("stale self-model version".into()));
+        }
+        self.pending
+            .expected_self_model_version
+            .get_or_insert(expected_version);
+        self.pending.self_model_versions.push(version);
+        Ok(())
+    }
+
+    async fn load_write_receipt(
+        &mut self,
+        operation_id: &str,
+    ) -> Result<Option<agent_llm_mm::ports::StoredWriteReceipt>, AppError> {
+        Ok(self
+            .deps
+            .state
+            .lock()
+            .unwrap()
+            .committed
+            .receipts
+            .iter()
+            .find(|(id, _)| id == operation_id)
+            .map(|(_, receipt)| receipt.clone()))
+    }
+    async fn append_write_receipt(
+        &mut self,
+        request: &agent_llm_mm::ports::WriteReceiptRequest,
+        receipt: agent_llm_mm::ports::StoredWriteReceipt,
+        _recorded_at: DateTime<Utc>,
+    ) -> Result<(), AppError> {
+        self.pending
+            .receipts
+            .push((request.operation_id.clone(), receipt));
+        Ok(())
+    }
+    async fn load_claim_for_reflection(
+        &mut self,
+        claim_id: &str,
+    ) -> Result<Option<StoredClaim>, AppError> {
+        Ok(self
+            .deps
+            .state
+            .lock()
+            .unwrap()
+            .committed
+            .claims
+            .iter()
+            .find(|claim| claim.claim_id == claim_id)
+            .cloned())
+    }
+    async fn load_event_for_reflection(
+        &mut self,
+        event_id: &str,
+    ) -> Result<Option<StoredEvent>, AppError> {
+        Ok(self
+            .deps
+            .state
+            .lock()
+            .unwrap()
+            .committed
+            .events
+            .iter()
+            .find(|event| event.event_id == event_id)
+            .cloned())
+    }
+    async fn compare_and_set_claim_status(
+        &mut self,
+        claim_id: &str,
+        expected: ClaimStatus,
+        status: ClaimStatus,
+    ) -> Result<(), AppError> {
+        let target = self.load_claim_for_reflection(claim_id).await?;
+        if target.is_none_or(|target| {
+            target.status != expected || target.status == ClaimStatus::Superseded
+        }) {
+            return Err(AppError::InvalidParams(
+                "reflection target claim changed or no longer exists".to_string(),
+            ));
+        }
+        self.update_claim_status(claim_id, status).await
+    }
     async fn upsert_claim(&mut self, claim: StoredClaim) -> Result<(), AppError> {
         self.pending.claims.push(claim);
         Ok(())
@@ -3028,6 +3851,23 @@ impl ReflectionTransaction for FailureModeReflectionTransaction {
             ));
         }
         let mut state = self.deps.state.lock().unwrap();
+        if let Some(expected) = self.pending.expected_self_model_version
+            && state
+                .committed
+                .self_model_versions
+                .last()
+                .map(|head| head.version)
+                != Some(expected)
+        {
+            return Err(AppError::InvalidParams(
+                "stale self-model version at commit".into(),
+            ));
+        }
+        state
+            .committed
+            .self_model_versions
+            .extend(self.pending.self_model_versions);
+        state.committed.receipts.extend(self.pending.receipts);
         for claim in self.pending.claims {
             upsert_claim(&mut state.committed.claims, claim);
         }

@@ -1,4 +1,7 @@
 .worktrees/
 target/
+/not-a-sqlite-url
 agent-llm-mm.local.toml
 .codex/
+
+__pycache__/

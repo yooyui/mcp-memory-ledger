@@ -35,6 +35,36 @@ using a real local path.
   not grant remote write management and should not be exposed as public admin
   interfaces without a separate product gate.
 
+## Explicit Database Lifecycle
+
+The product entrypoints do not change the database implicitly:
+
+- `init` creates a missing file with the current schema, migration ledger,
+  baseline commitment, and default identity. It refuses an existing file.
+- `migrate` requires an existing file. It creates a pre-migration backup,
+  migrates a restored rehearsal copy first, rejects a moving source, and then
+  migrates the original in one transaction with row-count and foreign-key
+  checks.
+- `doctor` and `doctor --read-only` are equivalent no-write inspections.
+  Missing, old, newer-than-supported, incomplete, and read-only databases are
+  reported without create, migration, or seed.
+- `doctor --allow-bootstrap` is the only doctor form allowed to initialize or
+  migrate, and that permission is explicit in the command and JSON report.
+- `serve` requires a current database and otherwise fails with the required
+  lifecycle command.
+
+macOS:
+
+```bash
+./scripts/agent-llm-mm.sh init agent-llm-mm.local.toml
+./scripts/agent-llm-mm.sh doctor --read-only agent-llm-mm.local.toml
+./scripts/agent-llm-mm.sh migrate agent-llm-mm.local.toml
+```
+
+The matching PowerShell modes are `init`, `doctor --read-only`, and `migrate`.
+`PRAGMA user_version` and `schema_migrations` are the authoritative version and
+ledger pair; the current schema version is reported by every lifecycle command.
+
 ## Backup
 
 Run SQLite backup before schema migration work, before changing a formal
@@ -90,10 +120,10 @@ After restore, point a private config at the restored database:
 database_url = "sqlite:///absolute/path/to/restore-check/formal-restore.sqlite"
 ```
 
-Then run `doctor` against the restored path. On macOS:
+Then run read-only `doctor` against the restored path. On macOS:
 
 ```bash
-AGENT_LLM_MM_CONFIG=/absolute/path/to/restore-check.toml ./scripts/agent-llm-mm.sh doctor
+AGENT_LLM_MM_CONFIG=/absolute/path/to/restore-check.toml ./scripts/agent-llm-mm.sh doctor --read-only
 ```
 
 On Windows, run the same restore helper from Git Bash, WSL, or an equivalent
@@ -101,7 +131,7 @@ bash environment, then validate with the PowerShell entrypoint:
 
 ```powershell
 $env:AGENT_LLM_MM_CONFIG = 'D:/agent-llm-mm/restore-check.toml'
-pwsh -File .\scripts\agent-llm-mm.ps1 doctor
+pwsh -File .\scripts\agent-llm-mm.ps1 doctor --read-only
 Remove-Item Env:\AGENT_LLM_MM_CONFIG
 ```
 
@@ -151,15 +181,15 @@ Before touching a formal database:
    backup helper will use SQLite online backup.
 3. Run `./scripts/backup-sqlite.sh` and keep the backup path.
 4. Restore the backup to a new path with `./scripts/restore-sqlite.sh`.
-5. Point a private config at the restored path and run `doctor`.
+5. Point a private config at the restored path and run `doctor --read-only`.
 
 For migration implementation or verification:
 
-1. Run the migration against a test or restored database first, not the formal
-   live path.
+1. Run `doctor --read-only` against a test or restored database first, then run
+   explicit `migrate`; do not start with the formal live path.
 2. Confirm required tables exist: `events`, `claims`, `evidence_links`,
    `episode_events`, `reflections`, `reflection_trigger_ledger`,
-   `identity_claims`, `commitments`, and `operation_log`.
+   `identity_claims`, `commitments`, `operation_log`, and `schema_migrations`.
 3. Confirm namespace constraints and legacy backfills for `events` and `claims`
    still match current code expectations.
 4. Confirm reflection audit columns still exist:
@@ -175,16 +205,18 @@ Useful local checks:
 
 ```bash
 cargo test --test sqlite_backup_restore
+cargo test --test sqlite_lifecycle
 cargo test --test sqlite_store
 git diff --check
-./scripts/agent-llm-mm.sh doctor /absolute/path/to/restore-check.toml
+./scripts/agent-llm-mm.sh doctor --read-only /absolute/path/to/restore-check.toml
 ```
 
 On Windows, keep the platform command shape separate:
 
 ```powershell
 cargo test --test sqlite_backup_restore
+cargo test --test sqlite_lifecycle
 cargo test --test sqlite_store
 git diff --check
-pwsh -File .\scripts\agent-llm-mm.ps1 doctor .\restore-check.toml
+pwsh -File .\scripts\agent-llm-mm.ps1 doctor --read-only .\restore-check.toml
 ```

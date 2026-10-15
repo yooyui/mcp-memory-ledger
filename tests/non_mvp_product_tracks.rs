@@ -1,15 +1,10 @@
 use std::fs;
 
-use agent_llm_mm::{
-    domain::memory_semantics_projection::{
-        MemorySemanticsProjectionInput, build_memory_semantics_projection,
-    },
-    support::{
-        config::{AppConfig, ModelConfig, ModelProviderKind, OpenAiCompatibleConfig},
-        packaging_preflight::{PackagingPreflightOptions, summarize_packaging_preflight},
-        provider_certification::{ProviderCertificationOptions, summarize_provider_certification},
-        release_evidence_index::{ReleaseEvidenceIndexOptions, build_release_evidence_index},
-    },
+use agent_llm_mm::support::{
+    config::{AppConfig, ModelConfig, ModelProviderKind, OpenAiCompatibleConfig},
+    packaging_preflight::{PackagingPreflightOptions, summarize_packaging_preflight},
+    provider_certification::{ProviderCertificationOptions, summarize_provider_certification},
+    release_evidence_index::{ReleaseEvidenceIndexOptions, build_release_evidence_index},
 };
 use serde_json::json;
 use tempfile::tempdir;
@@ -216,31 +211,6 @@ fn provider_certification_preflight_rejects_placeholder_live_evidence_files() {
 }
 
 #[test]
-fn memory_semantics_projection_reports_richer_semantics_without_new_durable_writes() {
-    let projection = build_memory_semantics_projection(MemorySemanticsProjectionInput {
-        evidence_relation_count: 3,
-        episode_summary_count: 2,
-        semantic_claim_count: 4,
-        procedural_memory_count: 0,
-        self_model_write_migration_present: false,
-    });
-
-    assert!(projection.read_only);
-    assert!(!projection.writes_performed);
-    assert_eq!(projection.durable_self_model_write_path, "run_reflection");
-    assert_semantic_capability(&projection, "evidence_relations", "partial");
-    assert_semantic_capability(&projection, "episode_summaries", "partial");
-    assert_semantic_capability(&projection, "procedural_memory", "not_implemented");
-    assert_semantic_capability(&projection, "durable_self_model_writes", "blocked");
-    assert!(
-        projection
-            .non_claims
-            .iter()
-            .any(|claim| claim.contains("not full ranking engine"))
-    );
-}
-
-#[test]
 fn packaging_preflight_keeps_release_packaging_blocked_until_artifacts_exist() {
     let temp_dir = tempdir().expect("temp dir");
     let summary = summarize_packaging_preflight(PackagingPreflightOptions {
@@ -313,25 +283,6 @@ fn assert_entry(
             )
         });
     assert_eq!(entry.status, status);
-}
-
-fn assert_semantic_capability(
-    projection: &agent_llm_mm::domain::memory_semantics_projection::MemorySemanticsProjection,
-    capability: &str,
-    status: &str,
-) {
-    let entry = projection
-        .capabilities
-        .iter()
-        .find(|entry| entry.capability == capability)
-        .unwrap_or_else(|| {
-            panic!(
-                "missing semantic capability {capability}; capabilities={:?}",
-                projection.capabilities
-            )
-        });
-    assert_eq!(entry.status, status);
-    assert!(!entry.writes_allowed);
 }
 
 fn assert_blocker(

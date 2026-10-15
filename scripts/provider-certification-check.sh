@@ -44,4 +44,4 @@ if [[ -n "${output_dir}" ]]; then
   args+=(--output-md "${output_dir}/provider-certification-summary.md")
 fi
 
-cargo run --quiet --bin provider_certification_check -- "${args[@]}"
+cargo run --quiet --features release-tools --bin provider_certification_check -- "${args[@]}"
