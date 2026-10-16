@@ -1,3 +1,60 @@
+# 历史计划（已被取代）
+
+状态：`superseded / historical evidence only`。唯一执行入口为 [2026-10-16-task-continuity-and-host-integration.md](2026-10-16-task-continuity-and-host-integration.md)。以下 active、进行中、未提交或平台未支持措辞是当时快照，不是当前状态，也不授予执行权限。已完成基线见[当前状态](../project-status.md)。未关闭的真实客户端/部署等外部证据门仍由新计划保留。
+
+## 2026-10-16 当前执行切片：先补齐工作空间与恢复功能
+
+旧项目基础事实显式接入首片补充 `adopt-preview` / `adopt`、registry v2 namespace 映射与旧连接 fail-closed。高级历史全闭包接入仍开放；不得把保守首片当作任意旧库迁移。见[限定合同](../workspace-legacy-adoption.md)。
+
+状态：`active / implementation in progress / uncommitted, verification pending`。当前优先完成实际功能，不重做文档主阶段；允许将 M2 有界可用性功能前移，不因 M1 外部验收未完成而阻塞实现。以下是唯一当前执行入口，后文日期段保留历史依据。
+
+- [ ] **Workspace lifecycle**：`workspace unbind --id UUID --root ABS` 精确移除已存 root（可不存在）；`disable --id UUID` / `enable --id UUID` 显式停用/恢复。ID、授权和账本保留；active 与 bound 独立，enable 须有有效 root。旧连接在下一 tools/list/tools/call、包括 replay 前重新鉴权，已派发操作不追溯取消。实现已接入，待最终同源验证。见[合同](../local-workspace-core.md)。
+- [ ] **Read-only setup assistance**：`workspace inspect` / `status` 输出 registry JSON；`client-config --socket ABS --mode fixed|global` 输出 TOML。只读、不连接核心或账本、不写客户端配置、不授予权限；global 模式需客户端提供正确启动 cwd。实现已接入，待最终同源验证。见[命令](../workspace-client-config.md)。
+- [ ] **Native backup and restore**：`backup --db ABS --output NEW_ABS` / `restore --db ABS --output NEW_ABS`，current schema7、SQLite online backup、一致 WAL、校验后 no-clobber 发布。registry 单独保存；不自动迁移、激活 workspace 或切换客户端。实现已接入，待最终同源验证。见[操作边界](../database-operations.md)。
+
+此前提交 `f8eb9ed` 的 [CI run 38709687717](https://github.com/yooyui/mcp-memory-ledger/actions/runs/38709687717) 已全绿：Ubuntu/macOS 各 794 项 Rust 测试、Windows 429 项，以及 Ubuntu 真实 Chromium 核心网页检查。Windows 仍不支持新核心；这些结果不覆盖本次未提交改动。独立安全审查、新核心真实客户端自然语言、fresh-machine、真实模型效果/费用及人工发布仍未通过。完成上述有限实现不等于全部规划完成。
+
+本轮仅修改助手云端工作区；保留用户数据、历史与回执，不访问 Mac、调用真实模型、推送或替换正式部署。完成代码后做必要回归与文档一致性检查；失败须修复或明确阻断，不以旧 CI 代替新证据。
+
+---
+
+## 2026-10-15 当前执行切片：本机核心与可信工作空间
+
+状态：`active / M1.W1 in progress / implementation and acceptance pending`。用户已批准在原本地记忆主线上补齐单一本机核心服务、轻量 stdio 桥、可信 workspace 绑定、服务端范围授权、个人记忆显式共享与统一监控。本段保留 2026-10-15 的设计与验收依赖；当前实现切片以页首 2026-10-16 段为准。对应[验收矩阵](../workspace-core-acceptance.md)只记录证据，不另设执行队列。
+
+### 审计结论与复用边界
+
+原 [70 项冻结审计](2026-10-09-original-plan-traceability.md)描述 e14a59e；其后[最终核对](2026-10-09-original-plan-final-reconciliation.md)、schema6/schema7 与包验证已完成基础账本、更正回放、反馈/经验候选、字面检索、上下文和有限生命周期实现，不重新领取历史未完成行。当前新增缺口是原 `MemoryScope` 目标中的 project/root 绑定、可信会话授权、共享运行时与完整可观察性；现有 namespace 查询过滤不是访问授权。
+
+正式 Mac 的旧版 `d9e33d3` 已有 20 项直接 MCP 协议检查、11 项网页检查及一个真实自然语言主动召回/更正样本。它们不证明新核心/桥已实现、已部署或自然语言规则始终被遵守；原 M1.3.1 冻结故事仍需逐项对齐。正式二进制、用户数据、gpt-6-luna 配置及正常客户端进程保持不动。
+
+### 本轮设计决策
+
+- 一个 Unix 本机核心持有 SQLite、业务 runtime 和共享 observer；多个 stdio 桥只建立客户端会话并转交协议。桥以管理端固定的 `--workspace-id`、`--workspace-root` 连接，核心精确核对 registry。核心与桥代码不等于安装开机服务。
+- 桥支持一次全局客户端配置：`--registry` 模式仅按可信启动 cwd 精确解析已注册 root，不向上猜测、自动登记或跟随会话移动；固定 cwd 客户端仍用显式 ID/root。每个新项目注册与个人授权仍需明确管理操作。
+- registry 由独立本机管理入口维护稳定 workspace ID、规范化 root 及个人 exact namespace 的读/写授权。每次调用重新加载当前授权；撤销必须在旧连接的下一次请求、包括 receipt replay 前生效。工具入参只能选择已授予范围，不能登记或修改权限。
+- 本机 Codex `0.162.0-alpha.17.2` 的实际 app-server 探针已通过 67 条断言：未声明 roots，16 次诊断 roots 查询均为空；新连接可能继承启动 cwd，但更新既有会话 cwd 后 MCP PID/cwd 不变。故本期只承诺固定连接绑定，移动会话不自动重绑；必须显式维护 root 绑定并重建连接。该实测没有模型回合，也不是桌面项目移动或新核心验收。
+- 普通工作空间会话隐藏并拒绝七个全局工具：`build_self_snapshot`、`decide_with_snapshot`、`run_reflection`、`get_self_model_history`、`get_self_model_versions`、`inspect_retrieval_index`、`rebuild_retrieval_index`。未知新工具默认拒绝；`supersede_memory` 保留同范围更正闭环。禁止全局工具不等于已实现可信 SnapshotHandle 或完整 scoped self-model。
+- 核心中的普通 ingest 在运行模式上关闭自动反思，不能只依赖空 hints 或模型守约。显式个人读取不附带个人写入；工具的嵌套 scope、owner、目标与来源必须保持同一授权域。
+- 核心默认关闭监控 HTTP 数据面。共享 observer 用于统一聚合；管理员能力与工作空间会话分开，新增显式 owner CLI 与浏览器标签页内存登录，公开静态壳不含数据，所有 API/SSE 必须 Bearer；只在隔离 fixture 注入合成能力验证。不得把 loopback 或网页筛选当认证；本轮不创建生产凭据或开放正式管理员服务。
+- 本期新核心/桥仅规划 macOS/Linux Unix sockets；Windows 继续支持已有 stdio 路径，新核心暂不支持。三平台旧运行时 CI 不等于三平台核心验收。
+- 边界是可信本机启动下防模型参数越权和误路由，不声称抵抗任意同 OS 用户进程。registry/root 字符串本身不是凭据；只读展示与批量 export 仍遵守各自数据/审计合同。
+
+### 实施顺序与退出条件
+
+- [ ] **M1.W1 Trusted Workspace Core and Stdio Bridge** — **进行中**。注册/绑定与逐调用授权纯合同、Unix 核心与桥、七工具拒绝、core ingest 自动反思关闭。退出条件：多客户端共享核心、两项目及个人读/写/撤销矩阵、缺失或伪造 root/嵌套 scope/全局旁路拒绝、未知工具拒绝；拒绝发生在领域读取/写入/模型调用和回放之前；客户端 EOF 不结束核心，跨连接相同 JSON-RPC ID 不串响应。
+- [ ] **M1.W2 Unified Observation and Recovery** — **待验收/依赖 W1**。统一 session/workspace/correlation 归因、成功召回与允许工具的元数据历史、管理监控能力隔离；保留 export 无持久日志合同。退出条件：双客户端事件在同一 observer 聚合，所有敏感 HTTP 路由拒绝无权限请求；隔离核心异常终止/重连、重复写回放、单实例排他、备份恢复到新路径与只读核验通过。旧 PID 的退出原因未知，不能由隔离正常 EOF 推断。
+- [ ] **M1.W3 Candidate Integration and Client Acceptance** — **待验收/依赖 W1、W2**。完整文档/样例、隔离候选包、独立审查、精确提交 CI 与实际客户端协议闭环。macOS/Linux 新核心证据和 Windows legacy 回归分开；自然语言端到端需单独真实客户端样本，不以直接 tools/call 代替。正式部署切换、全局客户端配置和开机服务不在本轮执行范围。
+- [ ] **M1.W4 Remaining Local Product Documentation** — **文档与模板已补，最终同源核对待完成/依赖主闭环稳定**。按原正式化差距补必要支持、安全、变更及协作模板；责任人/响应时限只能使用明确提供的信息。依赖扫描工具、SBOM/attestation 先评估可用性与原条件，不擅自安装或将 Alpha 后置项升级成本轮必做。
+
+每片先保存实际测试命令、源码/二进制身份及失败/未测项，再更新状态。代码/测试存在、隔离通过、真实客户端、精确 CI 与正式部署是不同证据级别。出现范围泄漏、跨会话串扰、隐式模型调用、数据/receipt 兼容破坏或恢复失败时停止扩张，先修最小失败例；不得用端口抢占重试替代核心架构验收。
+
+### 保持开放的外部门与非目标
+
+真实 fresh-machine 十分钟安装、真实同模型效果/token/费用、人工 release decision 和正式发布保持开放。保留 retain-all、现有反思写路径和原 UI 风格；不加入团队云服务、远程 HTTP MCP、多租户、自治执行器、破坏性 retention/compaction、自动 updater 或开机管理。原“认证/授权不进入近期”的叙述只继续约束远程/团队方向，不阻止本次明确授权的本机工作空间访问控制；原 service-manager 非目标也不阻止手动启动的单本机核心。
+
+---
+
 ## 2026-10-10 schema7 独立实现切片
 
 有界 global identity/commitment append-only ledger 已在本轮本地代码中实现：真实初始化/迁移 baseline0、单调版本、来源安全 ordered diff、记录边界 effective time、expected-version guard 和显式同范围组件补偿回滚。生产写路径仍仅 `run_reflection`；新 rollback 继续要求 Claim anchor、显式同范围来源、新提供的有效证据、confirm 和 durable request_id。迁移/恢复、旧回执字节、漂移 fail-closed、原子失败、范围防泄漏和结构门须随源代码测试。见[合同](../self-model-versions.md)。
@@ -51,7 +108,7 @@
 
 # MCP Memory Ledger 全新项目规划
 
-状态：`active / M0 complete / M1 active / M1.0.1, M1.0.2, M1.0.3, M1.1.1, M1.1.2, M1.1.3, M1.1.4, M1.1.5, M1.1.6, M1.2.1, M1.2.2, M1.2.3, M1.2.4, M1.2.5, M1.2.6 and M1.2.7 complete`
+状态：`active / M0 complete / M1.W1 in progress`；历史完成切片保留如下，当前顺序以本文件顶部 2026-10-16 段为准。
 规划日期：`2026-07-10`
 规划输入基线：`dev-work@6fcbb5f`
 主线整理基线：`1f7390d`
@@ -79,7 +136,9 @@ MCP Memory Ledger 已经拥有可运行的 Rust + SQLite + MCP `stdio` 核心、
 
 ## 2. 事实基线
 
-### 2.1 已实现
+### 2.1 2026-07-10 历史实现基线
+
+本节工具数、CLI、provider 与数据结构描述保留当时语境；后续已完成能力见本文件 dated continuation、[当前状态](../project-status.md)与[最终核对](2026-10-09-original-plan-final-reconciliation.md)。本轮新增核心/桥仍按顶部队列待验收。
 
 - 单一 Rust crate，正式 CLI 为 `serve` 与 `doctor`。
 - MCP `stdio` 运行时暴露 12 个工具（新增 `recall_memory`、`build_task_context`）：`ingest_interaction`、`search_memory`、`get_memory`、`get_reflection_history`、`get_self_model_history`、`get_evidence_relation`、`supersede_memory`、`build_self_snapshot`、`decide_with_snapshot`、`run_reflection`。其中 `search_memory` 已覆盖显式 scope 的 Event、Claim、Episode 与 Reflection provenance 首片，`get_memory` 已覆盖 Event、Claim、Episode 与 scoped Reflection 首片，`get_reflection_history` 已覆盖 exact scoped Claim revision chain 首片，`get_self_model_history` 已覆盖 scoped identity/commitment revision audit 首片，`get_evidence_relation` 已覆盖 scoped evidence-relation runtime 首片，`supersede_memory` 已覆盖 scoped Claim audited supersede 首片。
@@ -499,7 +558,7 @@ M2 退出指标：
 以下方向不进入当前执行队列：
 
 - Streamable HTTP remote server；
-- OAuth / authz / rate limit / tenant isolation；
+- 远程/团队 OAuth、authz、rate limit 与 tenant isolation（不包含顶部已批准的本机 workspace 会话授权）；
 - remote read-only dashboard 与 remote write admin；
 - write-capable daemon、queue、retry、dead letter 和持续自治；
 - MCP experimental tasks；

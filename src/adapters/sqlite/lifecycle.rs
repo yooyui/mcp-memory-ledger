@@ -1,3 +1,4 @@
+use crate::support::sqlite_url::sqlite_file_url as sqlite_url;
 use std::{
     collections::BTreeSet,
     fs,
@@ -12,7 +13,6 @@ use sqlx::{
     Connection, Row, SqliteConnection,
     sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions},
 };
-use uuid::Uuid;
 
 use crate::error::AppError;
 
@@ -26,7 +26,7 @@ use super::{
 
 pub const CURRENT_DATABASE_SCHEMA_VERSION: i64 = CURRENT_SCHEMA_VERSION;
 
-const REQUIRED_TABLES: [&str; 19] = [
+const REQUIRED_TABLES: [&str; 26] = [
     "events",
     "claims",
     "evidence_links",
@@ -36,6 +36,13 @@ const REQUIRED_TABLES: [&str; 19] = [
     "reflection_scopes",
     "reflection_evidence",
     "self_model_versions",
+    "experience_uses",
+    "experience_use_events",
+    "task_heads",
+    "task_revisions",
+    "task_requirements",
+    "task_checkpoints",
+    "task_checkpoint_sources",
     "identity_claims",
     "commitments",
     "operation_log",
@@ -48,7 +55,7 @@ const REQUIRED_TABLES: [&str; 19] = [
     "schema_migrations",
 ];
 
-const PRESERVED_DATA_TABLES: [&str; 16] = [
+const PRESERVED_DATA_TABLES: [&str; 23] = [
     "events",
     "claims",
     "evidence_links",
@@ -58,6 +65,13 @@ const PRESERVED_DATA_TABLES: [&str; 16] = [
     "reflection_scopes",
     "reflection_evidence",
     "self_model_versions",
+    "experience_uses",
+    "experience_use_events",
+    "task_heads",
+    "task_revisions",
+    "task_requirements",
+    "task_checkpoints",
+    "task_checkpoint_sources",
     "operation_log",
     "feedback_candidates",
     "experience_episodes",
@@ -224,15 +238,11 @@ pub async fn initialize_database(database_url: &str) -> Result<DatabaseLifecycle
             ));
         }
     }
-    fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-        .map_err(|error| {
-            AppError::Message(format!(
-                "init could not exclusively create database: {error}"
-            ))
-        })?;
+    create_private_file(&path).map_err(|error| {
+        AppError::Message(format!(
+            "init could not exclusively create database: {error}"
+        ))
+    })?;
     migrate_in_place(database_url, false, true).await?;
 
     let mut report = inspect_database(database_url).await?;
@@ -284,16 +294,22 @@ pub async fn migrate_database(database_url: &str) -> Result<DatabaseLifecycleRep
     }
 
     let backup_path = create_backup_anchor(database_url, &path, initial.schema_version).await?;
-    let rehearsal_path = std::env::temp_dir().join(format!(
-        "agent-llm-mm-migration-rehearsal-{}.sqlite",
-        Uuid::new_v4()
-    ));
-    fs::copy(&backup_path, &rehearsal_path).map_err(|error| {
+    // RAII removes the copy and all SQLite sidecars on success and failure.
+    // On Unix tempfile creates this directory atomically with mode 0700.
+    let rehearsal_directory =
+        private_directory(&std::env::temp_dir(), ".agent-migration-rehearsal-")?;
+    let rehearsal_path = rehearsal_directory.path().join("rehearsal.sqlite");
+    let mut rehearsal_file = create_private_file(&rehearsal_path)?;
+    let mut backup_file = fs::File::open(&backup_path)
+        .map_err(|error| AppError::Message(format!("failed to open migration backup: {error}")))?;
+    std::io::copy(&mut backup_file, &mut rehearsal_file).map_err(|error| {
         AppError::Message(format!(
             "failed to create migration restore rehearsal copy {}: {error}",
             rehearsal_path.display()
         ))
     })?;
+    drop(rehearsal_file);
+    drop(backup_file);
     let rehearsal_url = sqlite_url(&rehearsal_path);
 
     let rehearsal_result = async {
@@ -308,7 +324,7 @@ pub async fn migrate_database(database_url: &str) -> Result<DatabaseLifecycleRep
         Ok::<_, AppError>(report)
     }
     .await;
-    cleanup_sqlite_files(&rehearsal_path);
+    drop(rehearsal_directory);
     let rehearsal = rehearsal_result?;
 
     // Validate the final state while the migration still owns its write
@@ -494,6 +510,8 @@ async fn run_migration_steps(
             5 => install_v5(connection).await?,
             6 => install_v6(connection).await?,
             7 => super::self_model_versions::install(connection).await?,
+            8 => super::task::install(connection).await?,
+            9 => super::experience_use::install(connection).await?,
             _ => {
                 return Err(AppError::Message(format!(
                     "missing migration implementation for version {version}"
@@ -748,7 +766,7 @@ async fn inspect_pool(
     report
 }
 
-async fn inspect_connection(
+pub(super) async fn inspect_connection(
     connection: &mut SqliteConnection,
     operation: &str,
     database_exists: bool,
@@ -968,6 +986,14 @@ async fn create_backup_anchor(
         )));
     }
 
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let staging = private_directory(parent, ".agent-migration-backup-")?;
+    let snapshot = staging.path().join("snapshot.sqlite");
+    create_private_file(&snapshot)?;
+
     let mut connection = SqliteConnection::connect_with(
         &parse_options(database_url)?
             .create_if_missing(false)
@@ -975,16 +1001,32 @@ async fn create_backup_anchor(
     )
     .await
     .map_err(sqlite_error)?;
-    let escaped = backup_path.to_string_lossy().replace('\'', "''");
+    let escaped = snapshot.to_string_lossy().replace('\'', "''");
     execute(&mut connection, &format!("VACUUM INTO '{escaped}'")).await?;
     connection.close().await.map_err(sqlite_error)?;
-    if !backup_path.is_file() {
-        return Err(AppError::Message(format!(
-            "backup anchor was not created: {}",
-            backup_path.display()
-        )));
-    }
+    // Windows requires write access on a handle passed to FlushFileBuffers.
+    fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&snapshot)
+        .and_then(|file| file.sync_all())
+        .map_err(|error| AppError::Message(format!("failed to sync migration backup: {error}")))?;
+    // Atomic create-if-absent publication, including dangling symlinks and races.
+    // Staging stays on the destination filesystem; unsupported hard links fail closed.
+    publish_backup(&snapshot, &backup_path)?;
+    #[cfg(unix)]
+    fs::File::open(parent).and_then(|directory| directory.sync_all()).map_err(|error| {
+        AppError::Message(format!("migration backup was published but directory sync failed; original is not migrated: {error}"))
+    })?;
     Ok(backup_path)
+}
+
+fn publish_backup(snapshot: &Path, backup_path: &Path) -> Result<(), AppError> {
+    fs::hard_link(snapshot, backup_path).map_err(|error| {
+        AppError::Message(format!(
+            "cannot publish migration backup without overwriting: {error}"
+        ))
+    })
 }
 
 async fn connect_pool(
@@ -1021,28 +1063,25 @@ fn require_file_path(database_url: &str) -> Result<PathBuf, AppError> {
 }
 
 fn sqlite_file_path(database_url: &str) -> Option<PathBuf> {
-    let path = database_url.strip_prefix("sqlite://")?;
-    let path = path.split_once('?').map_or(path, |(path, _)| path);
-    if path.is_empty() || path == ":memory:" {
+    let options = parse_options(database_url).ok()?;
+    // SQLx owns URI decoding. Validate and reserve exactly the filename it opens.
+    let raw = database_url
+        .trim_start_matches("sqlite://")
+        .trim_start_matches("sqlite:");
+    let (database, query) = raw.split_once('?').unwrap_or((raw, ""));
+    if options.get_filename().as_os_str().is_empty()
+        || options.get_filename() == Path::new(":memory:")
+        || options
+            .get_filename()
+            .to_string_lossy()
+            .starts_with("file:")
+        || database == ":memory:"
+        || url::form_urlencoded::parse(query.as_bytes())
+            .any(|(key, value)| key == "mode" && value == "memory")
+    {
         return None;
     }
-
-    #[cfg(windows)]
-    let path = normalize_windows_sqlite_path(path);
-
-    #[cfg(not(windows))]
-    let path = path.to_string();
-
-    Some(PathBuf::from(path))
-}
-
-#[cfg(windows)]
-fn normalize_windows_sqlite_path(path: &str) -> String {
-    let bytes = path.as_bytes();
-    if bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b':' {
-        return path[1..].to_string();
-    }
-    path.to_string()
+    Some(options.get_filename().to_path_buf())
 }
 
 fn ensure_parent_directory(path: &Path) -> Result<(), AppError> {
@@ -1071,18 +1110,65 @@ fn path_writable_hint(path: &Path) -> Option<bool> {
         .map(|metadata| !metadata.permissions().readonly())
 }
 
-fn cleanup_sqlite_files(path: &Path) {
-    for candidate in [
-        path.to_path_buf(),
-        PathBuf::from(format!("{}-wal", path.display())),
-        PathBuf::from(format!("{}-shm", path.display())),
-    ] {
-        let _ = fs::remove_file(candidate);
-    }
+fn create_private_file(path: &Path) -> Result<fs::File, AppError> {
+    #[cfg(windows)]
+    let result = {
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let absolute = parent
+            .canonicalize()
+            .map_err(|error| AppError::Message(error.to_string()))?
+            .join(
+                path.file_name()
+                    .ok_or_else(|| AppError::Message("sqlite path needs filename".into()))?,
+            );
+        crate::support::windows_security::private_create(&absolute)
+    };
+    #[cfg(not(windows))]
+    let result = {
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        options.open(path)
+    };
+    result.map_err(|error| AppError::Message(format!("cannot create private sqlite file: {error}")))
 }
 
-fn sqlite_url(path: &Path) -> String {
-    format!("sqlite://{}", path.to_string_lossy().replace('\\', "/"))
+#[cfg(windows)]
+type PrivateDirectory = crate::support::windows_security::PrivateTempDir;
+#[cfg(not(windows))]
+type PrivateDirectory = tempfile::TempDir;
+
+fn private_directory(parent: &Path, prefix: &str) -> Result<PrivateDirectory, AppError> {
+    #[cfg(windows)]
+    let result = {
+        let parent = parent
+            .canonicalize()
+            .map_err(|error| AppError::Message(error.to_string()))?;
+        crate::support::windows_security::private_tempdir_in(&parent, prefix)
+    };
+    #[cfg(not(windows))]
+    let result = {
+        let mut builder = tempfile::Builder::new();
+        builder.prefix(prefix);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            builder.permissions(fs::Permissions::from_mode(0o700));
+        }
+        builder.tempdir_in(parent)
+    };
+    result.map_err(|error| {
+        AppError::Message(format!(
+            "cannot create private sqlite staging directory: {error}"
+        ))
+    })
 }
 
 async fn reset_connection_pragmas(connection: &mut SqliteConnection) -> Result<(), AppError> {
@@ -1162,6 +1248,8 @@ async fn schema_structure_issues(
     install_v5(&mut reference).await?;
     install_v6_extensions(&mut reference).await?;
     super::self_model_versions::install(&mut reference).await?;
+    super::task::install(&mut reference).await?;
+    super::experience_use::install(&mut reference).await?;
     let mut issues = Vec::new();
     for table in REQUIRED_TABLES {
         let expected = table_structure(&mut reference, table).await?;
@@ -1338,4 +1426,53 @@ fn normalize_schema_ddl(ddl: &str) -> String {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod private_file_tests {
+    use super::*;
+
+    #[test]
+    fn backup_publication_never_overwrites_existing_file_or_symlink() {
+        let directory = tempfile::tempdir().unwrap();
+        let snapshot = directory.path().join("snapshot");
+        let destination = directory.path().join("destination");
+        fs::write(&snapshot, "snapshot").unwrap();
+        fs::write(&destination, "existing").unwrap();
+        assert!(publish_backup(&snapshot, &destination).is_err());
+        assert_eq!(fs::read(&destination).unwrap(), b"existing");
+        fs::remove_file(&destination).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(directory.path().join("missing"), &destination).unwrap();
+            assert!(publish_backup(&snapshot, &destination).is_err());
+            assert!(
+                fs::symlink_metadata(&destination)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+            fs::remove_file(&destination).unwrap();
+        }
+        publish_backup(&snapshot, &destination).unwrap();
+        assert_eq!(fs::read(destination).unwrap(), b"snapshot");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_staging_is_private_and_removes_all_sidecars_on_drop() {
+        use std::os::unix::fs::PermissionsExt;
+        let parent = tempfile::tempdir().unwrap();
+        let staging = private_directory(parent.path(), ".test-").unwrap();
+        assert_eq!(
+            fs::metadata(staging.path()).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        let path = staging.path().to_owned();
+        for name in ["db", "db-wal", "db-shm", "db-journal"] {
+            create_private_file(&path.join(name)).unwrap();
+        }
+        drop(staging);
+        assert!(!path.exists());
+    }
 }

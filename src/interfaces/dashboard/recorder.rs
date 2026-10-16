@@ -27,11 +27,34 @@ impl OperationRecorder {
         }
     }
 
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
     pub fn append(&self, event: OperationEvent) {
         let mut events = self
             .events
             .lock()
             .expect("operation recorder lock poisoned");
+        if events.len() == self.capacity {
+            events.pop_front();
+        }
+        events.push_back(event.clone());
+        let _ = self.broadcaster.send(event);
+    }
+
+    /// Assign and publish while holding one lock so concurrent core sessions
+    /// cannot publish a higher sequence before a lower one.
+    pub(super) fn append_ordered(
+        &self,
+        mut event: OperationEvent,
+        sequence: &std::sync::atomic::AtomicU64,
+    ) {
+        let mut events = self
+            .events
+            .lock()
+            .expect("operation recorder lock poisoned");
+        event.sequence = sequence.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         if events.len() == self.capacity {
             events.pop_front();
         }

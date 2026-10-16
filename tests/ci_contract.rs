@@ -24,6 +24,8 @@ fn ci_covers_linux_and_macos_quality_gates() {
         "feedback_provenance",
         "feedback_candidates",
         "experience_workflow",
+        "experience_use_feedback",
+        "dashboard_admin",
         "indexed_text_recall",
         "mcp_stdio",
         "schema7_migration",
@@ -32,6 +34,13 @@ fn ci_covers_linux_and_macos_quality_gates() {
         "native_model_protocols",
         "openai_compatible_model",
         "provider_config",
+        "workspace_registry",
+        "workspace_client_config",
+        "workspace_adoption",
+        "mcp_session_policy",
+        "local_core_cli",
+        "local_core",
+        "database_backup",
     ] {
         assert!(
             workflow.contains(&format!("--test {suite}")),
@@ -102,8 +111,62 @@ fn ci_executes_source_bound_packages_and_real_windows_wrapper() {
     ] {
         assert!(windows.contains(&format!("- name: {step}\n        run: {command}")));
     }
-    assert!(
-        !workflow.contains("upload-artifact"),
-        "local candidate checks must not publish artifacts"
+    // CI may retain narrowly selected synthetic verification evidence, never
+    // publish a candidate binary/archive, database, private config or raw log.
+    assert!(workflow.contains("scripts/verify-local-core.py"));
+    assert!(workflow.contains("test_local_core_verifier.py"));
+    assert!(workflow.contains("test_windows_local_core_verifier.py"));
+    assert!(workflow.contains("scripts/dashboard-admin-browser-check.mjs"));
+    assert!(!windows.contains("scripts/verify-local-core.py"));
+    assert_eq!(workflow.matches("actions/upload-artifact@").count(), 2);
+    assert!(windows.contains("test_windows_local_core_verifier.py"));
+    assert!(windows.contains("target/portable-package-verify/local-core/summary.json"));
+    let upload = workflow
+        .split("uses: actions/upload-artifact@")
+        .nth(1)
+        .expect("synthetic verification evidence upload")
+        .split("  windows-runtime:")
+        .next()
+        .unwrap();
+    let paths = upload
+        .split("          path: |\n")
+        .nth(1)
+        .expect("explicit evidence paths");
+    let paths: Vec<_> = paths
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            "target/core-verification/summary.json",
+            "target/reports/codex-native-host.json",
+            "target/portable-package-verify/summary.json",
+            "target/portable-package-verify/SHA256SUMS",
+            "target/portable-package-verify/local-core/summary.json",
+            "${{ runner.temp }}/admin-browser-verification/report.json",
+            "${{ runner.temp }}/admin-browser-verification/cleanup.json",
+            "${{ runner.temp }}/admin-browser-verification/*.png",
+        ]
     );
+    assert!(!workflow.contains("continue-on-error:"));
+}
+
+#[test]
+fn native_host_probe_is_pinned_local_and_keeps_only_safe_summary() {
+    let workflow = fs::read_to_string(".github/workflows/ci.yml").unwrap();
+    let step = workflow
+        .split("- name: Verify native Codex task context")
+        .nth(1)
+        .unwrap()
+        .split("      - name:")
+        .next()
+        .unwrap();
+    assert!(step.contains("if: matrix.os == 'ubuntu-latest'"));
+    assert!(step.contains("rust-v0.159.2"));
+    assert!(step.contains("9e2d29a713b94478b240dec2f10e11324cd05fad76dc43e7c639bdf8a1337a6b"));
+    assert!(step.contains("sha256sum --check --strict"));
+    assert!(step.contains("--allow-synthetic-local-turn"));
+    assert!(!step.contains("continue-on-error"));
 }

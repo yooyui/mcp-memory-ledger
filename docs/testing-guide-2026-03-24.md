@@ -1,4 +1,102 @@
+# 任务与经验切片验证更新（2026-10-16）
+
+当前新增 native Codex host 探针见 [验证说明](codex-native-host-verification.md)。Ubuntu CI 固定官方 0.159.2 与 SHA256，使用独立 HOME、合成任务和本机 Responses fixture；不使用真实密钥或付费模型，只上传显式安全摘要。启动与恢复均须同时看到 hook 上下文和请求中的当前要求，否则失败。动作检查的真实宿主覆盖另行验证，不借上下文注入通过推定。
+
+Windows 原生 tier 新增 experience_use_feedback 与 dashboard_admin；本地环境限制、完整回归和精确提交结果见 [当前状态](project-status.md)。
+
 # Self-Agent MCP 测试指南（2026-03-24，按 2026-07-15 fresh 验证更新）
+
+## 经验采用反馈接口定向检查（新增）
+
+在具备 Rust 工具链的隔离环境运行：
+
+```sh
+cargo test --test mcp_session_policy
+cargo test --test mcp_stdio experience_use_tools_expose_precise_report_contracts
+cargo test --test mcp_stdio server_exposes_expected_tools_over_stdio
+cargo test --lib experience_use_cli
+cargo test --lib audit_contract_tests
+cargo test --test local_core
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+```
+
+新增断言覆盖 record/list/derive 字段合同、未知权限字段拒绝、跨范围拒绝、读写授权及下一调用撤销；standalone 清单 41、绑定会话 34，审计所有权保持显式。CLI 在配置加载/数据库打开前拒绝错误命令、损坏 JSON 和超限请求。MCP subprocess 测试需可启动本地子进程；这些测试只验证本地机制，不证明真实宿主注入、模型采用或独立结果验证。整合定向测试与严格 Clippy 已通过；全量回归及真实平台结果见当前状态。接口改动已使用 Rust 1.95 rustfmt 格式化。
+
+CLI 只使用已配置、显式迁移到当前 schema 的数据库。只读示例：
+
+```sh
+agent_llm_mm experience-use list --json '{"namespace":"project/example","task_id":"example","limit":20}'
+```
+
+record 的完整 required/optional 合同见运行时 tools/list 的 `record_experience_use` schema 与 [接口索引](tool-reference.md#experience-use-feedback-tools)。引用的任务、经验和 Event 必须先存在且同域；示例标识符不是自动创建指令。
+
+## 任务账本与上下文适配验证
+
+本轮合同与命令分别见[任务账本](task-ledger.md)、[Codex 适配器](codex-task-context-adapter.md)和[网页任务摘要](dashboard-live-desk.md)。仓库根目录可执行：
+
+```sh
+cargo test --test task_ledger --test codex_context_adapter --test mcp_session_policy
+cargo test --test dashboard_http --test dashboard_admin --test workspace_adoption
+cargo test --test sqlite_lifecycle --test schema7_migration
+cargo test --lib adapters::codex_context
+node --test tests/dashboard/frontend.test.mjs
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+```
+
+实际核心/桥与 Chromium 沿用现有 CI 流程并增加任务场景。无模型宿主探针 `scripts/probe-codex-context-host.py` 只读取公开协议，配置解析、hook 信任和真实注入分开报告；不得把环境阻断改成 passed。Windows 显式 Rust 清单包含两个新测试目标。最终通过范围必须绑定新的提交，不继承先前 CI。
+
+以下历史命令中的路径仅为可替换示例，不代表可访问的用户机器或真实部署位置；本轮不会执行历史的用户环境操作。
+
+
+旧域接入定向回归：`cargo test --test workspace_adoption` 与 `cargo test --lib interfaces::local_core::session::tests`。只使用隔离合成库，核对只读 preview、复杂 reflection/experience 全版本/feedback/trigger 的双向来源闭包、无关多项目正例、缺失/混域/未知载荷和资源上限拒绝、预览后历史变化、锁冲突、旧数据/receipt 不变与固定握手 namespace；详见[合同](workspace-legacy-adoption.md)。
+
+## 2026-10-16 新功能的必要验证入口
+
+先完成本轮功能，再用以下定向检查确认对应合同；不重复整轮文档主阶段。当前改动未提交，以下命令是复现入口，不能当作全部已通过：
+
+```sh
+cargo test --test workspace_registry --test local_core_cli --test workspace_client_config --test database_backup
+cargo test --test local_core
+./scripts/status-sync-check.sh
+git diff --check
+```
+
+当前工作区定向结果（2026-10-16，功能实现者已执行）：`cargo test --offline --test workspace_registry --test local_core_cli` 为 14 + 16 项通过；`cargo test --offline --test workspace_client_config --test local_core_cli` 为 5 + 16 项通过（后者重复，不累加）；`cargo test --offline --test database_backup` 为 7 项通过；`cargo test --offline --lib interfaces::local_core::session::tests` 为 8 项通过。仅是 Linux 云端 mock 定向证据，未覆盖完整当前源码、独立安全审查或跨平台新提交 CI。
+
+本轮冻结源码完整检查（2026-10-16）：`cargo test --offline --all-features --no-fail-fast` 跑完 812 项，首轮 800 通过、12 失败。11 项 `local_core` Unix socket 测试均在 fixture 启动处被当前云端 sandbox 的 AF_UNIX `EPERM` 阻断（独立 socket 创建探针同样拒绝）。另 1 项旧 demo wrapper 硬编码 `target/debug`，与本轮独立 `CARGO_TARGET_DIR` 不一致；在忽略的构建目录恢复指向本轮缓存的标准路径后，`self_revision_demo_runner` 两项重跑通过，无产品源码改动。去重结果为 **801 通过、11 项环境阻断**，不是全套通过。`cargo clippy --offline --all-targets --all-features -- -D warnings`、`cargo fmt --all -- --check`、`git diff --check` 与 `status-sync-check`（33 项）通过。使用 Rust 1.95、debug=0、incremental=0；无真实模型调用。当前增量的精确提交平台 CI 仍待验证。
+
+检查解绑已移动 root、停用/恢复与旧连接 replay 拒绝；只读 inspect/status 不改变 registry，生成 TOML 可解析且不写客户端配置；backup/restore 包含已提交 WAL、拒绝旧 schema/损坏结构/既有目标/sidecar，失败不损伤源文件或既有目标。registry 不在数据库快照中，恢复不自动激活/切换。
+
+此前提交 `f8eb9ed` 的 [CI run 38709687717](https://github.com/yooyui/mcp-memory-ledger/actions/runs/38709687717) 已全绿：Ubuntu/macOS 各 794 项 Rust 测试、Windows 429 项，以及 Ubuntu 真实 Chromium 核心网页检查。Windows 仍不支持新核心；这些结果不覆盖本次未提交改动。新改动须取得自己的回归与精确提交结果；独立安全审查、新核心真实客户端自然语言及 fresh-machine 仍未通过。Unix 实际进程检查受平台/环境限制时明确记录，不能宣称 Windows 新核心支持。下方 2026-10-15 定向数字和环境阻断保留当时含义。
+
+## 2026-10-15 工作空间核心验证（进行中）
+
+按[唯一active plan](plans/2026-07-10-product-replan.md)与[验收矩阵](workspace-core-acceptance.md)执行，不把源码存在或定向测试当全套通过。当前已有registry11项、实际Codex roots67条断言、管理员监控7项及legacy HTTP6项定向证据；历史首轮完整集成发现3项失败；云端已续建，最终同源回归仍待完成。最终总数、独立审查与精确提交CI尚待收口，以下命令只是复现入口。
+
+```sh
+cargo test --test workspace_registry --test mcp_session_policy --test local_core_cli
+cargo test --test local_core --test dashboard_admin --test dashboard_http
+```
+
+在明确的隔离目录准备mock配置、数据库和非正式端口；新核心/桥的实际进程测试只在macOS/Linux运行。Windows继续执行可用的registry/纯策略及legacy stdio回归，新核心不可标为supported或passed。不要运行测试去停止用户核心、迁移正式库或读取现有provider配置/凭据。
+
+必须覆盖：两个workspace与个人R/W授权/撤销、七全局工具隐藏及直接拒绝、所有允许工具的嵌套scope/owner/来源、receipt回放前重新授权、core ingest无模型/自动反思、相同RPC id跨连接不串响应、bridge EOF不关core、默认无HTTP及管理员全路由能力。资源目标为64会话、共享32个业务执行、每连接8个待完成请求和4 MiB输出缓冲；传输保护正在实现，需超限/背压/取消负例，不能用配置常量证明上限有效。
+
+[核心指南](local-workspace-core.md)提供`verify-local-core.py`候选运行入口：只给已构建二进制和新输出目录，无Cargo/Rust运行PATH，测试重连、更正/来源/历史、强制结束自有进程、回放和恢复到新路径。实现与实际执行结果分别记录；这仍是隔离运行，不是fresh-machine。任何脚本都不得操作正常用户进程。
+
+新增候选回归入口：
+
+```sh
+python3 -B -m unittest discover -s tests -p 'test_portable_package.py' -v
+python3 -B -m unittest discover -s tests -p 'test_local_core_verifier.py' -v
+python3 scripts/verify-local-core.py --binary /absolute/bin/agent_llm_mm --output /absolute/new-short-output
+```
+
+本次云端 Python 定向检查为45项包合同、17项验证器安全测试通过。环境在创建 Unix socket 时返回系统 `EPERM`，实际核心进程闭环在此受阻，不能计为通过，也不将测试改成跳过。Ubuntu/macOS CI 的 full Rust tier、独立核心验证器、精确源码包解包验证均为失败即阻断；Windows只保留旧stdio包验收。包中验证器、workspace指南和显式/全局桥样例随源码哈希绑定，CI保存合成摘要；新机与自然语言验收仍单列。
+
+实际Codex roots探针仅证明本版本固定连接的目录行为，无模型回合；移动会话不自动重绑。旧部署d9e33d3的20项协议、11项浏览器及一个真实自然语言召回/来源/更正样本另列，不能替代新架构自然语言验收。拒绝/失败轨迹、原始尝试与未测边界保留，实际模型/费用请求需要单独授权。
 
 ## 2026-10-15 体验与客户端验收
 
@@ -26,7 +124,7 @@ git diff --check
 
 全套测试包含原生适配器 request/response 单元与集成覆盖；检查原生 endpoint、headers、`store: false`、token budget、默认省略 temperature，以及 decision/self-revision 共享解析。错误覆盖应包含 timeout、非成功 status、畸形 JSON、空文本、拒绝、截断、不支持的工具响应、重定向及不泄漏 key/URL/body。实际 MCP stdio 测试验证 config-selected provider 及自动反思路径，不只测试独立 JSON helper。
 
-本节给出验证入口，不预先声明新总数或精确提交 CI 已通过。离线 fixture 与 doctor 通过都不是新增原生协议的 live 认证；现有 live runner 拒绝 native provider，preflight 对两者保持 `live_certified = false`；真实 endpoint、输出质量、同模型收益和费用实验仍需单独授权及证据。
+本节保留2026-10-10的协议验证入口，不预先声明新总数或精确提交CI已通过。当时live runner尚拒绝native provider；2026-10-13已扩展至Chat、Responses、Anthropic三协议，见[验收器记录](acceptance-2026-10-13.md)。离线fixture和doctor仍不是live认证；真实endpoint、输出质量、同模型收益与费用需要各自授权和证据。
 
 ## 2026-10-10 portable package 与 wrapper 验证
 
@@ -52,7 +150,7 @@ git diff --check
 
 当前工作目录（按实际环境替换）：
 
-`~/code/agent-llm-mm`
+`${REPO_ROOT}`
 
 命令执行环境要求：
 
@@ -104,7 +202,7 @@ format、all-feature Clippy、`full` 与 status-sync 门禁。`tests/ci_contract
 ### 3.2 建议进入工作目录
 
 ```zsh
-cd ~/code/agent-llm-mm
+cd ${REPO_ROOT}
 ```
 
 ### 3.3 数据库隔离建议
@@ -1093,7 +1191,7 @@ cargo test --features release-tools --test local_alpha_release_evidence release_
 ### 7.1 使用独立数据库启动服务
 
 ```zsh
-cd ~/code/agent-llm-mm
+cd ${REPO_ROOT}
 cp examples/agent-llm-mm.example.toml agent-llm-mm.local.toml
 ./scripts/agent-llm-mm.sh serve
 ```
@@ -1105,7 +1203,7 @@ cp examples/agent-llm-mm.example.toml agent-llm-mm.local.toml
 另开一个终端，直接跑现有 E2E：
 
 ```zsh
-cd ~/code/agent-llm-mm
+cd ${REPO_ROOT}
 cargo test --test mcp_stdio -- --nocapture
 ```
 
@@ -1268,8 +1366,12 @@ http://127.0.0.1:8787/
 
 ```zsh
 cargo test --test dashboard_config --test dashboard_recorder --test dashboard_projection --test dashboard_http
+node --test tests/dashboard/frontend.test.mjs
 cargo test --test mcp_stdio dashboard_enabled_does_not_corrupt_mcp_stdout_and_records_tool_event -v
+cargo test --test mcp_stdio dashboard_lifecycle -v
 ```
+
+`dashboard_lifecycle` 使用 mock、独立数据库与随机 loopback 端口，覆盖两进程竞争、首个 MCP 正常 stdin EOF 后接管、等待期间事件保留、最后 EOF 释放监听、等待者关闭取消接管及 required 端口失败。只终止测试自身子进程，不操作正式监听；属于隔离运行验证。
 
 dashboard HTTP 测试会监听本机端口，受限沙箱中可能需要在允许本地监听的环境运行。启用 dashboard 时，`DashboardConfig::validate` 只接受 `localhost` 或 loopback IP，明确拒绝 `0.0.0.0`、LAN IP 与域名；disabled 配置可以保留未启用的 host 值但不会启动监听。该面板只读，不会调用 `run_reflection` 或修改 SQLite；`dashboard_rejects_write_methods_on_read_only_routes` 覆盖 POST / PUT / PATCH / DELETE 返回 `405 Method Not Allowed`，`dashboard_serves_html_summary_events_detail_and_health` 覆盖 HTML、JSON API、health 和 SSE 只读 GET surface。
 
@@ -1286,7 +1388,8 @@ command-level tracing 在解析 CLI 后初始化并固定写入 stderr。`doctor
 如果改动涉及 dashboard 视觉或静态物料，还需要确认：
 
 - `GET /` 包含 `Memory-chan Live Desk`
-- 静态 HTML visual contract 覆盖动态 ID 省略、指标卡/operation chain 自适应网格、侧栏贴纸 `contain` 显示、移动端顶部状态条重排、hero 文案遮罩和移动端无横向溢出
+- 使用 [Live Desk 隔离浏览器脚本](dashboard-live-desk.md) 验证真实点击、选中/焦点保持、断线恢复、历史、中英日、320–1440px 和缩放重排；不再用静态 HTML 字符串断言代替实际交互
+- HTTP 回归覆盖非根入口重定向、模块白名单、只读实例元数据和禁用 SSE；历史投影回归保留原时间与 nullable 摘要
 - `GET /assets/memory-chan-hero.png` 返回 `content-type: image/png`
 - `GET /assets/memory-chan-sidebar.png` 返回 `content-type: image/png`
 - 生成图物料的仓库归属说明已经同步到 `NOTICE`
@@ -1637,3 +1740,33 @@ Schema7 的完整本地结果与最终 source/binary digest 见[阶段报告](pl
 
 本轮修复后的 Python 基线为 13 项 evaluation fixture 和 40 项 portable-package 回归；
 历史提交的 9/33 项结果保留为历史证据，不用于替代当前 head 的 CI。
+
+### Private lifecycle regression
+
+`cargo test --test sqlite_lifecycle private_lifecycle_modes_under_multiple_umasks` runs synthetic init and successful/failed migration in subprocesses with Unix umasks 000, 022 and 077. It checks owner-only new databases/backups, preserved source permissions and failed-migration bytes, and temporary-directory cleanup. `cargo test --lib private_file_tests` checks no-clobber publication (including dangling symlinks on Unix) and private staging/sidecar cleanup. No real user database or model provider is used.
+
+The lifecycle suite also covers encoded filenames and refusal to initialize an existing decoded path without changing its bytes. `cargo test --test openai_compatible_model --test provider_config` uses synthetic/loopback provider fixtures, with no real model calls. Cargo.lock pins rustls 0.23.46 (and its compatible rustls-webpki 0.103.15) to address [RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285.html) and [RUSTSEC-2026-0346](https://rustsec.org/advisories/RUSTSEC-2026-0346.html); dependency selection alone is not a claim that all security advisories or release gates are closed.
+
+## Windows local-core candidate 验证入口（2026-10-16）
+
+`cargo test --test local_core` 在 Windows 运行同一套真实 stdio bridge 多会话、跨 workspace 拒绝、授权撤销、锁冲突、重连、核心重启与关闭排空断言；纯 framing/session 测试也在 Windows 编译运行。额外运行 `workspace_client_config`、`workspace_registry`、`workspace_adoption` 与 native backup/lifecycle 测试。合成 fixture 私有 ACL 只用于新建临时目录，不修用户目录权限。
+
+Windows 解包验收调用包内 `verify-windows-local-core.py`，使用包内二进制、隔离 mock 数据、移除 Rust/Cargo 的子进程 PATH，验证两工作空间、重连、停止/重启与精确二进制哈希；候选包 commit/tree/哈希匹配仍由 portable-package 入口核验。无 Windows runner 的环境应明确返回不支持该验证环境，不能静默跳过并报成功。当前源码改动仍待精确提交原生 CI，Linux 检查不等于 Windows 实测，CI 成功也不等于自然语言客户端/fresh-machine/发布门通过。
+
+
+## Integrated candidate 2026-10-16
+
+Baseline `ef27d4358d721a1186592bdcd0ca8b2b3346c73e`, with the three frozen history, Windows and privacy deltas. The independent [source manifest](integrated-source-manifest.sha256) identifies reviewed code; the [review](independent-security-review-2026-10-16.md) separates original findings, repairs, source assessment and runtime limitations.
+
+- `cargo test --offline --all-features --no-fail-fast`: 846 tests attempted, initially 820 passed and 26 failed. A whole-directory `target` symlink used for an existing demo wrapper conflicted with the registry's real-ancestor safety check. The ignored build layout was corrected to a real `target` directory, retaining only `target/debug` as the build-cache link; no product source changed.
+- `cargo test --offline --all-features --no-fail-fast --lib --test workspace_registry --test local_core`: 45 library and 14 registry tests passed. Local-core fail-closed/no-server test passed; the other 12 failed at actual core startup with sandbox AF_UNIX `EPERM`. Deduplicated result: **834 passed, 12 environment-blocked**. Tests were not skipped or weakened.
+- `cargo clippy --offline --all-targets --all-features -- -D warnings`, `cargo fmt --all -- --check`, `git diff --check`, and status-sync (33 items) passed.
+- Python unit suites: portable packages 47, Unix verifier 17, Windows verifier 12, experience 36 and evaluation fixtures 13; all 125 passed. `node --test tests/dashboard/frontend.test.mjs`: 9 passed.
+
+These used Rust 1.95.0, incremental disabled and debug information disabled, synthetic data, no real models or credentials. Windows Python contracts and Linux compilation do not prove native Windows behavior. Full native Windows core/package and Ubuntu/macOS IPC/Chromium execution must run in exact-commit CI; natural-language client, fresh-machine and release authorization remain separate.
+
+## T09–T11 动作检查候选测试
+
+此切片已通过整合定向测试、Rustfmt 与严格 Clippy；全量及平台结果见当前状态。可单独执行 `cargo test --lib action_check`、`cargo test --lib codex_actions`，再走既有回归。新增覆盖：独立 epoch/任务版本、latest_active 与 pinned、伪 approval、状态暂停撤销、patch 多路径/移动/链接、重复事件改参、时间/版本回退、坏配置、preview 幂等及撤回 CAS 冲突。
+
+真实宿主仍需分别测正常/越界 patch、core 断线、hook 缺失/超时、stdin 和 hosted 绕行；故障放行必须记为覆盖缺口。单测不能替代固定版本实际宿主验收。详见 [合同](codex-action-checks.md)。

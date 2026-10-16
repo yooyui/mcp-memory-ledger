@@ -22,7 +22,10 @@ python3 scripts/portable-package.py build --candidate local-mvp-ci-rc.1 --source
 cache. The command has no upload, release, tag, installer, service registration,
 credential, or model-call step. It runs `cargo build --locked --release --bin
 agent_llm_mm --target <native-target>` in an isolated `git archive` snapshot.
-Dirty and untracked checkout files are excluded. Compiler/wrapper overrides are
+Dirty and untracked checkout files are excluded. Use the packager from the same
+source revision for historical archives: the required payload inventory now
+includes workspace assets, so this revision does not accept older inventories
+as a new-core candidate. Existing archives are not rewritten. Compiler/wrapper overrides are
 cleared, Cargo compiler/wrapper settings are pinned for the command, and toolchain
 versions are measured inside that committed snapshot. The running packager must
 exactly match the script in that source commit; commit a changed script before
@@ -64,6 +67,9 @@ Each archive contains one named top-level directory, with:
 - `LICENSE` and `NOTICE`
 - the conservative mock-provider example configuration
 - this guide, database lifecycle guidance, and the MCP tool reference
+- workspace/core guidance, explicit and global bridge configuration examples,
+  and the exact-source `scripts/verify-local-core.py` shared/Unix verifier plus
+  `scripts/verify-windows-local-core.py` native named-pipe adapter
 - `BUILD-MANIFEST.json`
 
 The manifest records the exact Git commit and tree, source commit timestamp,
@@ -77,6 +83,21 @@ A checksum received alongside a modified artifact is not independent proof of
 authenticity; obtain expected source identity and receipts from a trusted build.
 
 ## Verify an unpacked archive
+
+On macOS/Linux, verification now also runs the bundled local-core verifier
+against the unpacked executable, with no Rust or provider credentials in its
+child environment. A failed core check blocks the package's passed summary.
+Its synthetic evidence is retained under `local-core/` and included in the
+recursive checksums. Windows candidate verification now invokes the bundled
+native named-pipe adapter against the unpacked executable, in a newly created
+private synthetic directory. It runs the same two-workspace protocol workflow,
+foreign-scope denials, explicit replay, owned-core termination/restart and
+backup/restore checks. The package verifier requires the named-pipe transport,
+actual executable SHA-256, TerminateProcess evidence and complete child cleanup;
+missing/failed evidence blocks a passed summary. No Unix signal result is claimed
+on Windows. Native execution still must pass on the exact-source Windows runner;
+a configured workflow or Linux unit test is not that evidence. This remains an
+isolated candidate simulation, not fresh-machine or natural-language-client evidence.
 
 Record the full expected source commit and tree independently, for example with
 `git rev-parse HEAD` and `git rev-parse HEAD^{tree}` in the intended source

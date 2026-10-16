@@ -1,3 +1,4 @@
+use agent_llm_mm::support::sqlite_url::sqlite_file_url as sqlite_url;
 #[path = "support/legacy_schema.rs"]
 mod legacy_schema;
 use std::{
@@ -15,10 +16,6 @@ use agent_llm_mm::{
 };
 use sqlx::{Connection, Row, SqliteConnection, sqlite::SqliteConnectOptions};
 use tempfile::tempdir;
-
-fn sqlite_url(path: &Path) -> String {
-    format!("sqlite://{}", path.to_string_lossy().replace('\\', "/"))
-}
 
 async fn create_legacy_database(path: &Path, valid_namespace: bool) {
     let url = sqlite_url(path);
@@ -345,6 +342,8 @@ async fn ledger_rows_match_declared_versions_after_migration() {
             (5, "feedback_experience_and_retrieval".to_string()),
             (6, "temporal_metadata_and_reflection_scope".to_string()),
             (7, "versioned_self_model".to_string()),
+            (8, "workspace_task_ledger".to_string()),
+            (9, "task_experience_use_feedback".to_string()),
         ]
     );
     connection.close().await.expect("close migrated");
@@ -767,4 +766,127 @@ async fn doctor_reports_broken_derived_index_without_mutating_and_rebuild_recove
     .unwrap();
     assert_eq!(healthy.status, "ok");
     assert!(healthy.retrieval_index.unwrap().is_usable());
+}
+
+// Set umask only in a child process, never in the multi-threaded test runner.
+#[cfg(unix)]
+#[test]
+fn private_lifecycle_modes_under_multiple_umasks() {
+    use std::os::unix::fs::PermissionsExt;
+    if std::env::var_os("AGENT_PRIVATE_LIFECYCLE_CHILD").is_none() {
+        for mask in ["000", "022", "077"] {
+            let temporary_root = tempdir().unwrap();
+            let status = std::process::Command::new("sh")
+                .args(["-c", "umask \"$1\"; exec \"$2\" --exact private_lifecycle_modes_under_multiple_umasks --nocapture", "private-lifecycle-test", mask])
+                .arg(std::env::current_exe().unwrap())
+                .env("AGENT_PRIVATE_LIFECYCLE_CHILD", "1")
+                .env("TMPDIR", temporary_root.path())
+                .status().unwrap();
+            assert!(status.success(), "umask {mask}");
+            assert_eq!(
+                fs::read_dir(temporary_root.path()).unwrap().count(),
+                0,
+                "rehearsal directories must be removed"
+            );
+        }
+        return;
+    }
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("new.sqlite");
+        initialize_database(&sqlite_url(&path)).await.unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let before = fs::read(&path).unwrap();
+        assert!(initialize_database(&sqlite_url(&path)).await.is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        for valid in [true, false] {
+            let path = directory.path().join(format!("legacy-{valid}.sqlite"));
+            create_legacy_database(&path, valid).await;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+            let before = fs::read(&path).unwrap();
+            let migrated = migrate_database(&sqlite_url(&path)).await;
+            assert_eq!(migrated.is_ok(), valid);
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o640,
+                "existing source permissions are unchanged"
+            );
+            if !valid {
+                assert_eq!(fs::read(&path).unwrap(), before);
+            }
+            let backups = backup_files(directory.path(), &format!("legacy-{valid}.sqlite"));
+            assert_eq!(backups.len(), 1);
+            assert_eq!(
+                fs::metadata(&backups[0]).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert!(fs::read_dir(directory.path()).unwrap().all(|e| {
+                !e.unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".agent-migration-")
+            }));
+        }
+    });
+}
+
+#[tokio::test]
+async fn encoded_paths_reserve_the_actual_sqlx_file_without_overwriting() {
+    let directory = tempdir().unwrap();
+    let canonical = directory.path().canonicalize().unwrap();
+    for (name, encoded) in [
+        ("space name.sqlite", "space%20name.sqlite"),
+        ("percent%20.sqlite", "percent%2520.sqlite"),
+        ("hash#.sqlite", "hash%23.sqlite"),
+        #[cfg(unix)]
+        ("question?.sqlite", "question%3F.sqlite"),
+        #[cfg(unix)]
+        ("back\\slash.sqlite", "back%5Cslash.sqlite"),
+    ] {
+        let path = canonical.join(name);
+        // Join OS paths before encoding; appending '/' to an encoded verbatim
+        // Windows directory would produce a different, mixed-separator path.
+        let url = sqlite_url(&path);
+        assert!(url.ends_with(encoded));
+        assert_eq!(
+            SqliteConnectOptions::from_str(&url).unwrap().get_filename(),
+            path
+        );
+        create_legacy_database(&path, true).await;
+        assert!(path.exists());
+        let before = fs::read(&path).unwrap();
+        assert!(initialize_database(&url).await.is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert!(!canonical.join(encoded).exists());
+        let migration = migrate_database(&url).await.unwrap();
+        assert!(Path::new(migration.backup_path.as_ref().unwrap()).is_file());
+        assert!(inspect_database(&url).await.unwrap().is_current());
+        let new_path = canonical.join(format!("new-{name}"));
+        let new_url = sqlite_url(&new_path);
+        assert!(new_url.ends_with(&format!("new-{encoded}")));
+        assert_eq!(
+            SqliteConnectOptions::from_str(&new_url)
+                .unwrap()
+                .get_filename(),
+            new_path
+        );
+        initialize_database(&new_url).await.unwrap();
+        assert!(new_path.is_file());
+    }
+    for url in [
+        "sqlite::memory:",
+        "sqlite://%3Amemory%3A",
+        "sqlite://file:ignored%3Fmode=memory",
+        "sqlite://ignored?mode=memory",
+        "sqlite://ignored?%6dode=%6demory",
+    ] {
+        assert!(initialize_database(url).await.is_err());
+        assert_eq!(
+            inspect_database(url).await.unwrap().status,
+            "unsupported_non_file_database"
+        );
+    }
 }

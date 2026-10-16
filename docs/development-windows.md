@@ -1,5 +1,46 @@
 # Windows 开发与接入指南
 
+## 任务续接与 Codex 接入
+
+新增任务工具与 CLI 见[任务账本](task-ledger.md)，原生配置预览、项目默认任务选择和宿主支持边界见[Codex 适配器](codex-task-context-adapter.md)。Schema 8 需要显式迁移，先备份，不能自动替换运行中的数据库。预览不改全局配置；未取得真实宿主注入证据，不将输出成功称为接入成功。Windows 核心/任务 CLI 与 Windows hook 自动配置支持分别记录。
+
+所有状态、构建与日志放在操作者确认的非同步目录；不改变现有部署。
+
+
+## 2026-10-15 平台边界
+
+Windows 新增本机命名管道 `core`/`bridge` candidate；原 standalone `serve` 与[兼容配置](../examples/codex-mcp-config.toml)继续保留。此前 Windows native/PowerShell CI 只覆盖 legacy，不证明本轮新核心。当前源码须经精确提交 Windows CI 与解包烟测，不能把 Linux 云端编译称为 Windows 运行通过。
+
+### 新核心 candidate 接入合同
+
+- `--socket` 使用本机私有目录下的绝对文件路径（例如 `C:/Users/you/AppData/Local/McpLedger/core.sock`），该位置必须不存在。它映射到当前用户 SID + 规范路径的命名管道；磁盘不会出现 socket 文件，不能用 `Test-Path` 当作就绪检查。
+- 管道拒绝远程客户端、用当前用户 protected DACL 创建、首实例失败即拒绝；桥在发送 workspace 绑定前核验服务端进程 SID。没有无鉴权 TCP 替代、自动启动核心或失败请求重放。
+- registry、数据库、锁、管理员能力文件和私有父目录必须由当前用户所有。既有 DACL 仅接受当前用户、SYSTEM、Administrators；NULL/无法解析/宽泛用户授权拒绝。新状态文件使用私有 DACL；程序不会自动修改已有文件 ACL。UNC、设备路径、ADS、reparse point 和硬链接别名不作为私有状态入口。
+- 同一个 OS 用户能够读数据库或改 registry 的其他程序、SYSTEM 和特权管理员不在隔离边界内。workspace 参数不是密钥，模型不能借参数改变绑定；每次调用重新核验授权。
+- 与 Unix 共用 25 允许/7 拒绝工具、64 会话、全局32派发预算和有界 framing；停止核心先结束连接并等待已派发事务/审计，再释放排他数据库锁。进程被终止后 OS 释放锁，新核心可显式重启；桥不会自动重放。
+
+以下只针对自行选择的新测试目录及 mock 配置；已有正式库先 backup 到新路径并规划停写，不能同时运行 legacy writer 与 core：
+
+```powershell
+$bin = 'C:/absolute/bin/agent_llm_mm.exe'
+$state = 'C:/Users/you/AppData/Local/McpLedger'
+$registry = "$state/workspaces.json"
+$socket = "$state/core.sock"
+# 目录应已存在且满足上述 owner/DACL 条件；不在这里修改现有 ACL。
+& $bin workspace --registry $registry register --root 'C:/absolute/project-a'
+# 现有 current-schema 数据库；配置的 dashboard.enabled/daemon.enabled 都为 false。
+$env:AGENT_LLM_MM_CONFIG = "$state/core.toml"
+& $bin core --socket $socket --registry $registry
+# 在另一个终端输出配置，审阅后再手动导入客户端：
+& $bin workspace --registry $registry client-config --socket $socket --mode fixed --root 'C:/absolute/project-a'
+```
+
+配置中使用 `database_url = "sqlite://C:/Users/you/AppData/Local/McpLedger/memory.sqlite"`。数据库首次创建须显式 `init`，不在 bridge/core 隐式初始化或迁移。已有旧 namespace 可按 `adopt-preview`/`adopt` 支持合同接入，执行与核心使用同一数据库锁。`backup`/`restore` 为原生 CLI 且输出到新路径；registry 仍须独立保存，不自动切换授权。
+
+管理员网页仍仅在明确提供 `--admin-bind 127.0.0.1:<port>` 与 `--admin-token-file <已有私有能力文件>` 时开启；不生成或记录生产 token、不与 bridge 分享能力，不自动安装服务。仅 loopback 不等于已认证。
+
+Windows 原生验证：`cargo test --lib --test local_core --test local_core_cli --test workspace_client_config --test workspace_registry --test workspace_adoption`。包内无 Rust PATH 烟测由 `scripts/verify-windows-local-core.py` 执行，失败阻断候选包通过。新旧状态、范围和证据区别见 [验收矩阵](workspace-core-acceptance.md)。
+
 2026-10-09 文档导航：首次使用见[快速开始](quickstart.md)，当前操作见[数据库手册](database-operations.md)，可执行协议示例见[完整工作流](runnable-memory-workflow.md)。实现基线三平台验证与 Windows native / wrapper 区别见[当前状态](project-status.md)；下方分阶段追加记录不代表新的发布批准。
 
 这份文档面向在 Windows 上开发、验证和接入 `agent_llm_mm` 的协作者。
@@ -207,3 +248,17 @@ Python 的 SQLite 连接上下文只管理事务，不负责关闭连接。包�
 工作流显式关闭连接，包括异常路径，避免 Windows 临时目录删除时出现 WinError 32。
 CI 将各项 Python 验证拆成独立步骤；任何失败都会使该 job 失败，不会被后续成功命令掩盖。
 是否已通过仍须查看当前精确提交的 Windows CI，不以脚本存在或其他平台通过代替。
+
+### Canonical Windows SQLite paths and ACL fixture regression
+
+Native CI exposed canonical Windows `\\?\` filenames being interpolated into SQLite URLs. Internal path-to-URL conversion now shares one byte-preserving percent encoder; `%`, `?`, `#`, spaces and Windows separators survive SQLx decoding as the same filename. Session, adoption and backup fixtures use it, and a regression opens the initialized canonical file again via explicit SQLx filename options. This fixes path construction; it does not relax private path/ACL validation.
+
+Windows SDDL intentionally converts an object-allow (`OA`) ACE without either GUID into a normal allow ACE. ACL tests assert that normalization separately and use actual GUID-bearing object ACEs to verify fail-closed rejection. Native CI must rerun; cross-target checks alone are insufficient.
+
+Windows backup checks inspect complete rooted paths, never the incomplete `\\?\C:` prefix. Completed backup and migration snapshots are reopened with read/write access before `sync_all` because Windows file flushing requires write access; creation remains private and publication still uses atomic create-if-absent hard links. No directory flush is claimed on Windows, and unsupported flush/publication failures remain errors. Default-config tests compare SQLx-decoded filenames rather than raw URL text.
+
+Synthetic Windows ACL fixtures invoke the fixed Windows PowerShell 5.1 executable with module auto-loading disabled and call the built-in .NET Framework directory ACL API directly. They do not load PowerShell 7 modules inherited from the CI runner. Both the Rust fixtures and installed-package verifier retain the same current-user protected ACL; core startup still validates it with native Windows APIs. Setup errors remain fatal.
+
+If the installed candidate core exits before readiness, the verifier records its exit code and fixed allowlisted startup-error categories in the summary. It scans at most 64 KiB of stderr and exports no raw stderr, paths, configuration, database contents, or credentials. An unclassified failure remains failed and requires further diagnosis; native integration success does not establish package success.
+
+The Windows verifier explicitly applies the current-user SID ACL to each newly created empty working subdirectory, including the pipe endpoint and restore directories. CPython 3.13 `mkdir(mode=0700)` installs a protected ACL with an OWNER RIGHTS (`OW`) entry instead of inheriting the parent's explicit SID ACL; that entry is intentionally outside the core's accepted trustee list. The verifier now uses its synthetic-directory ACL setup for every child rather than weakening production validation.

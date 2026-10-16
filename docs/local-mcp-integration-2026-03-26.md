@@ -1,10 +1,24 @@
 # 本机 MCP 接入
 
-## 2026-10-15 体验与客户端验收
+## 任务续接与 Codex 接入
 
-已安装 Codex 的 experimental app-server MCP API 已完成无模型合成闭环；脚本 `tools/codex_client/acceptance.py` 用进程配置和独立 HOME，不修改现有配置/项目信任。桌面持续注册仍需用户确认独立项目配置与信任；使用[最小五工具示例](../examples/codex-mcp-acceptance.example.toml)。运行命令、17 次工具调用结果和正式运行监控入口见[验收记录](acceptance-2026-10-15.md)。
+新增任务工具与 CLI 见[任务账本](task-ledger.md)，原生配置预览、项目默认任务选择和宿主支持边界见[Codex 适配器](codex-task-context-adapter.md)。Schema 8 需要显式迁移，先备份，不能自动替换运行中的数据库。预览不改全局配置；未取得真实宿主注入证据，不将输出成功称为接入成功。Windows 核心/任务 CLI 与 Windows hook 自动配置支持分别记录。
 
-更新：2026-10-10。文件名保留历史链接兼容性；本页描述当前 schema7 / 32 工具版本。
+所有状态、构建与日志放在操作者确认的非同步目录；不改变现有部署。
+
+
+旧 namespace 接入必须显式预览与 adopt，不能把现有 workspace 默认域改名。新 core 应使用 registry 实际返回的 project namespace（普通注册为 UUID 域，v2 adopted workspace 保留旧域）；参见[首片支持合同](workspace-legacy-adoption.md)。
+
+## 2026-10-15 先选连接模式
+
+- 原 `serve`：客户端每次启动独立运行时，32个工具；下面的JSON/TOML例子均属此模式。全局注册一次不意味着后台只有一个进程，namespace只是数据范围。
+- 新 `core`＋`bridge`：macOS/Linux Unix socket、Windows 本机命名管道 candidate，固定workspace连接，25允许/7拒绝、个人范围显式授权；实现与集成验收进行中。按[核心接入指南](local-workspace-core.md)及[桥配置样例](../examples/codex-workspace-bridge.toml)在隔离环境验证，Windows 接入与 ACL 前提见 [平台指南](development-windows.md)，本轮原生 CI 验证前不称验收通过。桥不读取provider配置或密钥，不自行启动核心。
+
+实际Codex roots探针67条断言证明本版本没有可用自动root通知依据；会话目录更新不改变已启动MCP的cwd。桥可以明确指定注册ID/root，或使用[一次全局配置样例](../examples/codex-workspace-bridge-global.toml)在启动时按真实cwd精确解析已注册目录。后者不向上搜索、不自动注册；固定cwd客户端须保留显式绑定。移动会话后重建连接，不能由模型参数重绑或自动猜项目。个人共享读写逐调用重新核验，撤销约束旧连接。
+
+旧部署d9e33d3已完成20项协议、11项网页检查和一个真实用户自然语言主动召回/来源核对/更正样本；新核心真实客户端仍待验收。完整范围见[矩阵](workspace-core-acceptance.md)。早期独立HOME/mock的17次app-server MCP调用、[最小五工具示例](../examples/codex-mcp-acceptance.example.toml)及脚本仍见[当时记录](acceptance-2026-10-15.md)。这些工作不会自动修改用户注册、全局配置或项目trust。
+
+更新：2026-10-15。文件名保留历史链接兼容性；以下兼容配置说明对应schema7的32工具standalone模式，新核心按顶部入口单独验收。
 
 先完成[快速开始](quickstart.md)的 build、明确配置、`init` 和 `doctor --read-only`。客户端负责启动服务进程；不要把自己的 shell 环境、工作目录或相对 SQLite 路径当作客户端必然继承的状态。
 
@@ -47,8 +61,8 @@ env = { AGENT_LLM_MM_CONFIG = "/absolute/path/ledger-demo.toml" }
 
 ## 3. 连接后验证
 
-1. 重新加载/连接 server，检查 `tools/list` 当前返回 32 个工具。
-2. 用 `ingest_interaction` 向 `project/demo` 写入一条合成 Event/Claim，保存结果 ID。
+1. 原standalone模式重新加载/连接server，检查`tools/list`返回32个工具；新核心应只列25个，并另外验证直接调用被隐藏的7个工具也被拒绝。
+2. 原standalone模式用`ingest_interaction`向`project/demo`写入合成Event/Claim并保存ID；新核心必须使用registry返回的实际project namespace，不得把示例namespace当成已授权范围。
 3. 断开再连接；用 `recall_memory` 查原文，再 `get_memory` 查看 evidence/provenance。
 4. 按[完整工作流](runnable-memory-workflow.md)更正并查看历史；确认其他 namespace 不混入。
 
@@ -60,7 +74,7 @@ env = { AGENT_LLM_MM_CONFIG = "/absolute/path/ledger-demo.toml" }
 - 真正的 provider 配置、密钥位置和 live preflight 见[provider contract](provider-contract.md)及平台指南。连接检查不是效果测量，也不能默认批准传输私人记忆或产生费用。
 - 显式 scoped read 不扩大查询；省略 namespace 的部分 legacy self-model 路径仍保留旧兼容行为。
 - `decide_with_snapshot` 的结果非权威且不会执行动作；candidate activation 只影响召回。客户端自身的权限与用户确认仍然独立有效。
-- 无认证 dashboard 只允许 loopback；不要映射成公开 HTTP MCP 服务。
+- 原无认证dashboard只允许loopback；新核心默认关闭监控HTTP，管理员Bearer只通过独立库API/隔离fixture验证，本轮没有正式网页登录。不要把任一入口映射成公开HTTP MCP服务。
 
 ## 5. 排错顺序
 
@@ -73,3 +87,7 @@ Schema7 global self-model version/diff and explicit compensation contract: [deta
 ## 2026-10-13 接入验收边界
 
 本轮不读取或修改用户现有 Codex 配置。上面的条目是用户自行接入的最小步骤；Python stdio harness 成功只标为隔离运行验证，不标为真实 Codex 客户端或新机器验收。分层结果、费用限制与复现命令见[本轮验收记录](acceptance-2026-10-13.md)。
+
+## 可选动作检查预览
+
+`codex-actions` 是独立、可选的额外参数检查入口，配置只生成候选，不自动改 Codex/MCP 注册或信任设置。沿用 `codex-context` 的已选 session binding；不会用 cwd 猜任务或把 task.source 当权限。默认只匹配 apply_patch。详见 [完整命令和边界](codex-action-checks.md)。现有 MCP 使用不依赖此入口。
